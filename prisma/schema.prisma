@@ -1,0 +1,1379 @@
+// ============================================================================
+// HR Recruitment Management System - database design v2 (Prisma 7 / PostgreSQL)
+// Multi-tenant (organizations), CafeOS-integration-ready (API only), internal
+// and external candidates, passwordless candidate accounts.
+//
+// Standalone: no dependency on CafeOS and no connection to its database.
+// Extra rules Prisma cannot express (partial unique indexes, value checks,
+// append-only protection) live in prisma/extra-constraints.sql and are added
+// to the first migration.
+//
+// Tenant isolation: every company-owned table carries organization_id. Child
+// tables use composite foreign keys (organization_id, parent_id) so a row can
+// never point at a parent that belongs to a different organization.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ----------------------------------------------------------------------------
+// ENUMS
+// ----------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum MemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum CandidateType {
+  EXTERNAL
+  INTERNAL
+}
+
+enum JobVisibility {
+  PUBLIC
+  INTERNAL_ONLY
+}
+
+enum CandidateAccountStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum LoginTokenPurpose {
+  SIGN_IN
+  VERIFY_EMAIL
+}
+
+enum EmploymentType {
+  INTERNSHIP
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+}
+
+enum WorkMode {
+  ON_SITE
+  HYBRID
+  REMOTE
+}
+
+enum JobStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+  ARCHIVED
+}
+
+enum ApplicationStage {
+  APPLIED
+  UNDER_REVIEW
+  SHORTLISTED
+  INTERVIEW_SCHEDULED
+  INTERVIEW_COMPLETED
+  SELECTED
+  OFFER_ISSUED
+  OFFER_ACCEPTED
+  ONBOARDING
+  JOINED
+  REJECTED
+  WITHDRAWN
+  OFFER_DECLINED
+}
+
+enum DocumentKind {
+  RESUME
+  ADDITIONAL
+  IDENTITY
+  EDUCATION
+  OFFER_LETTER
+  OTHER
+}
+
+enum FormStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum FormPurpose {
+  INITIAL_APPLICATION
+  TECHNICAL_SCREENING
+  HR_SCREENING
+  ADDITIONAL_INFORMATION
+  INTERVIEW_EVALUATION
+}
+
+enum FieldType {
+  SHORT_TEXT
+  LONG_TEXT
+  EMAIL
+  PHONE
+  NUMBER
+  DROPDOWN
+  RADIO
+  CHECKBOXES
+  DATE
+  YES_NO
+  FILE_UPLOAD
+  RESUME_UPLOAD
+  URL
+  RATING
+}
+
+enum AssignmentStatus {
+  PENDING
+  SUBMITTED
+  CANCELLED
+  EXPIRED
+}
+
+enum InterviewType {
+  ONLINE
+  IN_PERSON
+  PHONE
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum Recommendation {
+  STRONGLY_RECOMMEND
+  RECOMMEND
+  HOLD
+  REJECT
+}
+
+enum DecisionOutcome {
+  SELECTED
+  REJECTED
+  ON_HOLD
+}
+
+enum OfferStatus {
+  DRAFT
+  ISSUED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum OnboardingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  PENDING_APPROVAL
+  APPROVED
+  JOINED
+  CANCELLED
+}
+
+enum OnboardingDocStatus {
+  PENDING
+  UPLOADED
+  VERIFIED
+  REJECTED
+}
+
+enum NotificationType {
+  APPLICATION_RECEIVED
+  APPLICATION_STATUS_CHANGED
+  INTERVIEW_SCHEDULED
+  INTERVIEW_RESCHEDULED
+  INTERVIEW_CANCELLED
+  INTERVIEW_REMINDER
+  EVALUATION_PENDING
+  FORM_ASSIGNED
+  OFFER_ISSUED
+  OFFER_RESPONDED
+  ONBOARDING_DOCUMENTS_PENDING
+  GENERAL
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// --- Integration (CafeOS and any future system) ---
+
+enum IntegrationSystem {
+  CAFEOS
+}
+
+enum IntegrationConnectionStatus {
+  NOT_CONFIGURED
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+enum EmployeeLinkStatus {
+  PENDING_MATCH
+  LINKED
+  CONFLICT
+  UNLINKED
+}
+
+enum ExternalEntityType {
+  DEPARTMENT
+  LOCATION
+  ROLE
+  USER
+}
+
+enum SyncDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCEEDED
+  RETRYING
+  FAILED
+  CANCELLED
+}
+
+// Where an onboarding record stands with the external employee system
+enum IntegrationStatus {
+  NOT_APPLICABLE
+  PENDING
+  IN_PROGRESS
+  SYNCED
+  FAILED
+  CONFLICT
+}
+
+// ----------------------------------------------------------------------------
+// ORGANIZATIONS, USERS, ROLES, PERMISSIONS, SESSIONS  (internal staff only)
+// Roles and permissions are global definitions. A person's role is assigned per
+// organization through organization_member_roles.
+// ----------------------------------------------------------------------------
+
+model Organization {
+  id              String             @id @default(uuid(7)) @db.Uuid
+  slug            String             @unique // public careers URL: /careers/<slug>
+  name            String
+  status          OrganizationStatus @default(ACTIVE)
+  ownerUserId     String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
+  timezone        String             @default("UTC")
+  defaultCurrency String             @default("INR") @map("default_currency")
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  owner                  User                    @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  members                OrganizationMember[]
+  sessions               Session[]
+  departments            Department[]
+  jobs                   JobOpening[]
+  formTemplates          FormTemplate[]
+  candidates             OrganizationCandidate[]
+  documents              CandidateDocument[]
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  integrationConnections IntegrationConnection[]
+  apiClients             ApiClient[]
+
+  @@index([ownerUserId])
+  @@map("organizations")
+}
+
+model User {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  email           String     @unique // stored lower-case
+  name            String
+  passwordHash    String?    @map("password_hash") // optional: SSO users (future) have none
+  isPlatformAdmin Boolean    @default(false) @map("is_platform_admin") // product operator, not a company admin
+  status          UserStatus @default(ACTIVE)
+  lastLoginAt     DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships            OrganizationMember[]       @relation("MemberUser")
+  invitedMembers         OrganizationMember[]       @relation("MemberInvitedBy")
+  ownedOrganizations     Organization[]             @relation("OrganizationOwner")
+  sessions               Session[]
+  jobsCreated            JobOpening[]               @relation("JobCreatedBy")
+  assignedApplications   Application[]              @relation("ApplicationRecruiter")
+  statusChanges          ApplicationStatusHistory[]
+  notes                  ApplicationNote[]
+  formsCreated           FormTemplate[]
+  formAssignmentsMade    FormAssignment[]
+  interviewsCreated      Interview[]                @relation("InterviewCreatedBy")
+  feedback               InterviewFeedback[]
+  decisions              HiringDecision[]
+  offersCreated          Offer[]
+  onboardingApprovals    OnboardingRecord[]         @relation("OnboardingApprover")
+  onboardingDocsVerified OnboardingDocument[]
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  apiClientsCreated      ApiClient[]
+
+  @@map("users")
+}
+
+// A person's membership of one organization (one user can join several)
+model OrganizationMember {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  status         MemberStatus @default(INVITED)
+  invitedById    String?      @map("invited_by_id") @db.Uuid
+  joinedAt       DateTime?    @map("joined_at") @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization           Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user                   User                     @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy              User?                    @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  roles                  OrganizationMemberRole[]
+  assignedJobs           JobRecruiter[]
+  interviewParticipation InterviewParticipant[]
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Role {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique // ADMIN, HR_MANAGER, RECRUITER, INTERVIEWER
+  name        String
+  description String?
+  isSystem    Boolean  @default(true) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  memberRoles OrganizationMemberRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique // e.g. "job:create", "application:move_stage"
+  module      String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Which role a member holds inside their organization (replaces user_roles)
+model OrganizationMemberRole {
+  memberId   String   @map("member_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
+
+  member OrganizationMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role   Role               @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([memberId, roleId])
+  @@index([roleId])
+  @@map("organization_member_roles")
+}
+
+// Server-side staff sessions. Only a hash of the session token is stored.
+model Session {
+  id                   String    @id @default(uuid(7)) @db.Uuid
+  userId               String    @map("user_id") @db.Uuid
+  activeOrganizationId String?   @map("active_organization_id") @db.Uuid
+  tokenHash            String    @unique @map("token_hash")
+  // Idle deadline: 60 minutes after the session was last used. Moves forward while the person is active.
+  expiresAt            DateTime  @map("expires_at") @db.Timestamptz(6)
+  // Hard deadline: 12 hours after login. Never moves, so a session cannot live forever.
+  absoluteExpiresAt    DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  // When the session was last used (written at most once a minute).
+  lastSeenAt           DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  // Set when the session is ended on the server: logout, password change, deactivation, role change.
+  revokedAt            DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason        String?   @map("revoked_reason")
+  ipAddress            String?   @map("ip_address")
+  userAgent            String?   @map("user_agent")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganization Organization? @relation(fields: [activeOrganizationId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// One row per login attempt. The login rate limiter counts these. No email and no password is stored:
+// only a keyed hash of the email. Old rows are deleted after 14 days.
+model AuthLoginAttempt {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  identifierHash String   @map("identifier_hash")
+  ipAddress      String?  @map("ip_address")
+  succeeded      Boolean
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([identifierHash, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([createdAt])
+  @@map("auth_login_attempts")
+}
+
+// ----------------------------------------------------------------------------
+// DEPARTMENTS AND JOB OPENINGS  (organization-owned)
+// ----------------------------------------------------------------------------
+
+model Department {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  jobs         JobOpening[]
+  onboarding   OnboardingRecord[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("departments")
+}
+
+model JobOpening {
+  id                    String         @id @default(uuid(7)) @db.Uuid
+  organizationId        String         @map("organization_id") @db.Uuid
+  slug                  String // public URL: /careers/<org-slug>/jobs/<slug>
+  title                 String
+  description           String
+  departmentId          String?        @map("department_id") @db.Uuid
+  visibility            JobVisibility  @default(PUBLIC)
+  employmentType        EmploymentType @map("employment_type")
+  workMode              WorkMode       @map("work_mode")
+  location              String?
+  requiredSkills        String[]       @map("required_skills")
+  qualifications        String?
+  experienceRequirement String?        @map("experience_requirement")
+  compensationMin       Decimal?       @map("compensation_min") @db.Decimal(12, 2)
+  compensationMax       Decimal?       @map("compensation_max") @db.Decimal(12, 2)
+  compensationCurrency  String         @default("INR") @map("compensation_currency")
+  compensationPeriod    String?        @map("compensation_period") // e.g. per month, per year
+  internshipMonths      Int?           @map("internship_months")
+  openingsCount         Int            @default(1) @map("openings_count")
+  applicationDeadline   DateTime?      @map("application_deadline") @db.Timestamptz(6)
+  status                JobStatus      @default(DRAFT)
+  // The form candidates fill in for this job (custom application questions)
+  applicationFormId     String?        @map("application_form_id") @db.Uuid
+  publishedAt           DateTime?      @map("published_at") @db.Timestamptz(6)
+  closedAt              DateTime?      @map("closed_at") @db.Timestamptz(6)
+  createdById           String         @map("created_by_id") @db.Uuid
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  department      Department?    @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: NoAction)
+  applicationForm FormTemplate?  @relation("JobApplicationForm", fields: [organizationId, applicationFormId], references: [organizationId, id], onDelete: NoAction)
+  createdBy       User           @relation("JobCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  recruiters      JobRecruiter[]
+  applications    Application[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, applicationDeadline])
+  @@index([organizationId, departmentId])
+  @@index([createdById])
+  @@map("job_openings")
+}
+
+// Recruiters assigned to a job opening (recruiters only see their own jobs).
+// The composite key to organization_members guarantees the recruiter belongs
+// to the same organization as the job.
+model JobRecruiter {
+  organizationId String   @map("organization_id") @db.Uuid
+  jobId          String   @map("job_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  assignedAt     DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
+
+  job    JobOpening         @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Cascade)
+  member OrganizationMember @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
+
+  @@id([jobId, userId])
+  @@index([organizationId, userId])
+  @@map("job_recruiters")
+}
+
+// ----------------------------------------------------------------------------
+// CANDIDATES
+// candidate_profiles is GLOBAL: one profile per person (unique email), reused
+// across organizations. Each organization sees a candidate only through its own
+// organization_candidates row, so companies cannot see each other's candidates.
+// ----------------------------------------------------------------------------
+
+model CandidateProfile {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  email           String    @unique // normalized: trimmed + lower-case
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
+  fullName        String    @map("full_name")
+  phone           String?
+  city            String?
+  linkedinUrl     String?   @map("linkedin_url")
+  portfolioUrl    String?   @map("portfolio_url")
+  // Set if the candidate later asks for deletion (retention / erasure workflow)
+  anonymizedAt    DateTime? @map("anonymized_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  educations          CandidateEducation[]
+  experiences         CandidateExperience[]
+  skills              CandidateSkill[]
+  documents           CandidateDocument[]
+  organizationRecords OrganizationCandidate[]
+  account             CandidateAccount?
+  loginTokens         CandidateLoginToken[]
+
+  @@index([fullName])
+  @@map("candidate_profiles")
+}
+
+model CandidateEducation {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  candidateId    String   @map("candidate_id") @db.Uuid
+  institution    String
+  course         String?
+  degree         String?
+  graduationYear Int?     @map("graduation_year")
+  grade          String?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId])
+  @@map("candidate_educations")
+}
+
+model CandidateExperience {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  candidateId String    @map("candidate_id") @db.Uuid
+  company     String
+  title       String
+  startDate   DateTime? @map("start_date") @db.Date
+  endDate     DateTime? @map("end_date") @db.Date
+  isCurrent   Boolean   @default(false) @map("is_current")
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId])
+  @@map("candidate_experiences")
+}
+
+model CandidateSkill {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  candidateId String   @map("candidate_id") @db.Uuid
+  name        String // stored normalized (lower-case) for search
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, name])
+  @@index([name])
+  @@map("candidate_skills")
+}
+
+// One row per (organization, candidate): the company's own view of a person.
+// candidate_type lives here because "internal" is relative to a company.
+model OrganizationCandidate {
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  organizationId      String        @map("organization_id") @db.Uuid
+  candidateId         String        @map("candidate_id") @db.Uuid
+  candidateType       CandidateType @default(EXTERNAL) @map("candidate_type")
+  // Link to the existing employee record in an external system (nullable)
+  employeeLinkId      String?       @map("employee_link_id") @db.Uuid
+  claimedEmployeeCode String?       @map("claimed_employee_code") // what the applicant typed
+  internalVerifiedAt  DateTime?     @map("internal_verified_at") @db.Timestamptz(6)
+  tags                String[]
+  notes               String? // company-level HR notes about the person
+  firstSeenAt         DateTime      @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  candidate    CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  employeeLink ExternalEmployeeLink? @relation(fields: [organizationId, employeeLinkId], references: [organizationId, id], onDelete: NoAction)
+  applications Application[]
+
+  @@unique([organizationId, candidateId])
+  @@unique([organizationId, id])
+  @@unique([organizationId, employeeLinkId])
+  @@index([candidateId])
+  @@index([organizationId, candidateType])
+  @@map("organization_candidates")
+}
+
+// Metadata for every private file (resume, ID, offer letter...). The file
+// itself lives in private storage and is only served through an authorized route.
+// organization_id is empty for a file in the candidate's own library, and set for
+// a file an organization created (e.g. an offer letter).
+model CandidateDocument {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  candidateId    String       @map("candidate_id") @db.Uuid
+  organizationId String?      @map("organization_id") @db.Uuid
+  applicationId  String?      @map("application_id") @db.Uuid
+  kind           DocumentKind
+  originalName   String       @map("original_name")
+  storageKey     String       @unique @map("storage_key")
+  mimeType       String       @map("mime_type")
+  sizeBytes      Int          @map("size_bytes")
+  sha256         String
+  uploadedAt     DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  candidate      CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  organization   Organization?         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  application    Application?          @relation("ApplicationOwnedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: SetNull)
+  sharedWith     ApplicationDocument[]
+  formAnswers    FormAnswer[]
+  offerLetterFor Offer[]
+  onboardingDocs OnboardingDocument[]
+
+  @@index([candidateId, kind])
+  @@index([organizationId, applicationId])
+  @@map("candidate_documents")
+}
+
+// Which of the candidate's files an application shares with its organization
+model ApplicationDocument {
+  organizationId String   @map("organization_id") @db.Uuid
+  applicationId  String   @map("application_id") @db.Uuid
+  documentId     String   @map("document_id") @db.Uuid
+  sharedAt       DateTime @default(now()) @map("shared_at") @db.Timestamptz(6)
+
+  application Application       @relation("ApplicationSharedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  document    CandidateDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([applicationId, documentId])
+  @@index([organizationId, applicationId])
+  @@index([documentId])
+  @@map("application_documents")
+}
+
+// ----------------------------------------------------------------------------
+// CANDIDATE ACCOUNTS (passwordless portal login, separate from staff users)
+// ----------------------------------------------------------------------------
+
+model CandidateAccount {
+  id              String                 @id @default(uuid(7)) @db.Uuid
+  candidateId     String                 @unique @map("candidate_id") @db.Uuid
+  status          CandidateAccountStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?              @map("email_verified_at") @db.Timestamptz(6)
+  passwordHash    String?                @map("password_hash") // empty = passwordless; reserved for later
+  lastLoginAt     DateTime?              @map("last_login_at") @db.Timestamptz(6)
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  candidate CandidateProfile   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  sessions  CandidateSession[]
+
+  @@map("candidate_accounts")
+}
+
+model CandidateSession {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  account CandidateAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+  @@map("candidate_sessions")
+}
+
+// One-time sign-in codes / links. Only a hash of the token is stored.
+model CandidateLoginToken {
+  id            String            @id @default(uuid(7)) @db.Uuid
+  email         String
+  purpose       LoginTokenPurpose
+  tokenHash     String            @unique @map("token_hash")
+  expiresAt     DateTime          @map("expires_at") @db.Timestamptz(6)
+  usedAt        DateTime?         @map("used_at") @db.Timestamptz(6)
+  requestedIp   String?           @map("requested_ip")
+  candidateId   String?           @map("candidate_id") @db.Uuid
+  applicationId String?           @map("application_id") @db.Uuid
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  candidate   CandidateProfile? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  application Application?      @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([email, createdAt]) // used for rate limiting
+  @@index([expiresAt])
+  @@map("candidate_login_tokens")
+}
+
+// ----------------------------------------------------------------------------
+// APPLICATIONS AND PIPELINE
+// ----------------------------------------------------------------------------
+
+model Application {
+  id                      String           @id @default(uuid(7)) @db.Uuid
+  organizationId          String           @map("organization_id") @db.Uuid
+  referenceNumber         String           @unique @map("reference_number") // shown to the candidate
+  organizationCandidateId String           @map("organization_candidate_id") @db.Uuid
+  jobId                   String           @map("job_id") @db.Uuid
+  stage                   ApplicationStage @default(APPLIED)
+  stageChangedAt          DateTime         @default(now()) @map("stage_changed_at") @db.Timestamptz(6)
+  rejectionReason         String?          @map("rejection_reason")
+  source                  String? // where the candidate heard about the job
+  // Whether the applicant was internal or external when they applied
+  candidateTypeAtApplication CandidateType @default(EXTERNAL) @map("candidate_type_at_application")
+  // Copy of the candidate's profile at the moment of applying
+  profileSnapshot         Json?            @map("profile_snapshot")
+  assignedRecruiterId     String?          @map("assigned_recruiter_id") @db.Uuid
+  // Hash of the private link/token the candidate uses to view this application's status
+  statusTokenHash         String?          @unique @map("status_token_hash")
+  consentAcceptedAt       DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
+  privacyNoticeVersion    String?          @map("privacy_notice_version")
+  appliedAt               DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  job                   JobOpening            @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Restrict)
+  organizationCandidate OrganizationCandidate @relation(fields: [organizationId, organizationCandidateId], references: [organizationId, id], onDelete: Restrict)
+  assignedRecruiter     User?                 @relation("ApplicationRecruiter", fields: [assignedRecruiterId], references: [id], onDelete: SetNull)
+
+  statusHistory   ApplicationStatusHistory[]
+  notes           ApplicationNote[]
+  ownedDocuments  CandidateDocument[]        @relation("ApplicationOwnedDocuments")
+  sharedDocuments ApplicationDocument[]      @relation("ApplicationSharedDocuments")
+  formAssignments FormAssignment[]
+  formSubmissions FormSubmission[]
+  interviews      Interview[]
+  decision        HiringDecision?
+  offers          Offer[]
+  onboarding      OnboardingRecord?
+  notifications   Notification[]
+  loginTokens     CandidateLoginToken[]
+
+  // One person can apply to a given job only once (duplicate detection)
+  @@unique([jobId, organizationCandidateId])
+  @@unique([organizationId, id])
+  @@index([organizationId, stage])
+  @@index([organizationId, jobId, stage])
+  @@index([organizationId, appliedAt])
+  @@index([organizationCandidateId])
+  @@index([assignedRecruiterId])
+  @@map("applications")
+}
+
+// Append-only log of every stage change. Rows are never updated or overwritten.
+model ApplicationStatusHistory {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  applicationId  String            @map("application_id") @db.Uuid
+  fromStage      ApplicationStage? @map("from_stage")
+  toStage        ApplicationStage  @map("to_stage")
+  changedById    String?           @map("changed_by_id") @db.Uuid // null = system / candidate action
+  reason         String?
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  application Application @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  changedBy   User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, applicationId, createdAt])
+  @@map("application_status_history")
+}
+
+model ApplicationNote {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  applicationId  String   @map("application_id") @db.Uuid
+  authorId       String?  @map("author_id") @db.Uuid
+  body           String
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  application Application @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  author      User?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, applicationId, createdAt])
+  @@map("application_notes")
+}
+
+// ----------------------------------------------------------------------------
+// DYNAMIC FORM BUILDER
+// ----------------------------------------------------------------------------
+
+model FormTemplate {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  title          String
+  description    String?
+  purpose        FormPurpose
+  // Stage this form is normally used at (e.g. screening form -> SHORTLISTED)
+  suggestedStage ApplicationStage? @map("suggested_stage")
+  status         FormStatus        @default(DRAFT)
+  version        Int               @default(1)
+  createdById    String            @map("created_by_id") @db.Uuid
+  publishedAt    DateTime?         @map("published_at") @db.Timestamptz(6)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User             @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  fields       FormField[]
+  assignments  FormAssignment[]
+  submissions  FormSubmission[]
+  jobs         JobOpening[]     @relation("JobApplicationForm")
+
+  @@unique([organizationId, id])
+  @@index([organizationId, purpose, status])
+  @@map("form_templates")
+}
+
+model FormField {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  templateId     String    @map("template_id") @db.Uuid
+  key            String // stable machine name, unique within the form
+  label          String
+  description    String?
+  type           FieldType
+  required       Boolean   @default(false)
+  options        Json? // choices for dropdown / radio / checkboxes
+  config         Json? // e.g. rating scale, min/max, allowed file types
+  position       Int
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  template FormTemplate @relation(fields: [organizationId, templateId], references: [organizationId, id], onDelete: Cascade)
+  answers  FormAnswer[]
+
+  @@unique([templateId, key])
+  @@index([organizationId, templateId, position])
+  @@map("form_fields")
+}
+
+// "Give this form to this application" (e.g. technical screening form)
+model FormAssignment {
+  id                String            @id @default(uuid(7)) @db.Uuid
+  organizationId    String            @map("organization_id") @db.Uuid
+  applicationId     String            @map("application_id") @db.Uuid
+  templateId        String            @map("template_id") @db.Uuid
+  stageAtAssignment ApplicationStage? @map("stage_at_assignment")
+  assignedById      String?           @map("assigned_by_id") @db.Uuid
+  status            AssignmentStatus  @default(PENDING)
+  // Hash of the private link/token the candidate uses to open this form
+  accessTokenHash   String?           @unique @map("access_token_hash")
+  dueAt             DateTime?         @map("due_at") @db.Timestamptz(6)
+  assignedAt        DateTime          @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  completedAt       DateTime?         @map("completed_at") @db.Timestamptz(6)
+
+  application Application     @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  template    FormTemplate    @relation(fields: [organizationId, templateId], references: [organizationId, id], onDelete: Restrict)
+  assignedBy  User?           @relation(fields: [assignedById], references: [id], onDelete: SetNull)
+  submission  FormSubmission?
+
+  @@index([organizationId, applicationId, status])
+  @@index([organizationId, templateId])
+  @@map("form_assignments")
+}
+
+model FormSubmission {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  applicationId   String   @map("application_id") @db.Uuid
+  templateId      String   @map("template_id") @db.Uuid
+  assignmentId    String?  @unique @map("assignment_id") @db.Uuid // empty for the initial application form
+  templateVersion Int      @map("template_version")
+  submittedAt     DateTime @default(now()) @map("submitted_at") @db.Timestamptz(6)
+
+  application Application     @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  template    FormTemplate    @relation(fields: [organizationId, templateId], references: [organizationId, id], onDelete: Restrict)
+  assignment  FormAssignment? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+  answers     FormAnswer[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, applicationId])
+  @@index([organizationId, templateId])
+  @@map("form_submissions")
+}
+
+// Each answer keeps its own copy of the field label and type, so editing or
+// deleting the form later never changes what was submitted.
+model FormAnswer {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  submissionId   String    @map("submission_id") @db.Uuid
+  fieldId        String?   @map("field_id") @db.Uuid
+  fieldKey       String    @map("field_key")
+  fieldLabel     String    @map("field_label")
+  fieldType      FieldType @map("field_type")
+  value          Json?
+  documentId     String?   @map("document_id") @db.Uuid // for file-upload answers
+
+  submission FormSubmission    @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
+  field      FormField?        @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, submissionId])
+  @@index([fieldId])
+  @@map("form_answers")
+}
+
+// ----------------------------------------------------------------------------
+// INTERVIEWS AND EVALUATION
+// ----------------------------------------------------------------------------
+
+model Interview {
+  id             String          @id @default(uuid(7)) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  applicationId  String          @map("application_id") @db.Uuid
+  roundNumber    Int             @map("round_number")
+  roundName      String?         @map("round_name")
+  type           InterviewType
+  status         InterviewStatus @default(SCHEDULED)
+  scheduledStart DateTime        @map("scheduled_start") @db.Timestamptz(6)
+  scheduledEnd   DateTime        @map("scheduled_end") @db.Timestamptz(6)
+  meetingLink    String?         @map("meeting_link")
+  location       String?
+  instructions   String? // internal only
+  cancelReason   String?         @map("cancel_reason")
+  createdById    String?         @map("created_by_id") @db.Uuid
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  application  Application            @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  createdBy    User?                  @relation("InterviewCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  participants InterviewParticipant[]
+
+  // Note: "one active interview per round" is a partial unique index in extra-constraints.sql
+  @@unique([organizationId, id])
+  @@index([organizationId, applicationId])
+  @@index([organizationId, scheduledStart])
+  @@index([organizationId, status, scheduledStart])
+  @@map("interviews")
+}
+
+// The composite key to organization_members guarantees the interviewer belongs
+// to the same organization as the interview.
+model InterviewParticipant {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  interviewId    String   @map("interview_id") @db.Uuid
+  interviewerId  String   @map("interviewer_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  interview   Interview          @relation(fields: [organizationId, interviewId], references: [organizationId, id], onDelete: Cascade)
+  interviewer OrganizationMember @relation(fields: [organizationId, interviewerId], references: [organizationId, userId], onDelete: Restrict)
+  feedback    InterviewFeedback?
+
+  @@unique([interviewId, interviewerId])
+  @@unique([organizationId, id])
+  @@index([organizationId, interviewerId])
+  @@map("interview_participants")
+}
+
+// One independent evaluation per interviewer per interview.
+model InterviewFeedback {
+  id                 String          @id @default(uuid(7)) @db.Uuid
+  organizationId     String          @map("organization_id") @db.Uuid
+  participantId      String          @map("participant_id") @db.Uuid
+  interviewerId      String          @map("interviewer_id") @db.Uuid
+  technicalKnowledge Int?            @map("technical_knowledge")
+  communication      Int?
+  problemSolving     Int?            @map("problem_solving")
+  confidence         Int?
+  relevantExperience Int?            @map("relevant_experience")
+  roleSuitability    Int?            @map("role_suitability")
+  overallRating      Int?            @map("overall_rating")
+  strengths          String?
+  weaknesses         String?
+  notes              String?
+  recommendation     Recommendation?
+  submittedAt        DateTime?       @map("submitted_at") @db.Timestamptz(6) // empty = still a draft
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  participant InterviewParticipant @relation(fields: [organizationId, participantId], references: [organizationId, id], onDelete: Cascade)
+  interviewer User                 @relation(fields: [interviewerId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, participantId])
+  @@index([interviewerId])
+  @@map("interview_feedback")
+}
+
+// The final hiring decision. Only authorized HR users can create or view it.
+model HiringDecision {
+  id             String          @id @default(uuid(7)) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  applicationId  String          @map("application_id") @db.Uuid
+  outcome        DecisionOutcome
+  rationale      String?
+  decidedById    String          @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime        @default(now()) @map("decided_at") @db.Timestamptz(6)
+
+  application Application @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  decidedBy   User        @relation(fields: [decidedById], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, applicationId])
+  @@map("hiring_decisions")
+}
+
+// ----------------------------------------------------------------------------
+// OFFERS AND ONBOARDING
+// ----------------------------------------------------------------------------
+
+model Offer {
+  id                   String      @id @default(uuid(7)) @db.Uuid
+  organizationId       String      @map("organization_id") @db.Uuid
+  applicationId        String      @map("application_id") @db.Uuid
+  designation          String
+  compensationAmount   Decimal     @map("compensation_amount") @db.Decimal(12, 2)
+  compensationCurrency String      @default("INR") @map("compensation_currency")
+  compensationPeriod   String?     @map("compensation_period")
+  joiningDate          DateTime?   @map("joining_date") @db.Date
+  expiresAt            DateTime?   @map("expires_at") @db.Timestamptz(6)
+  status               OfferStatus @default(DRAFT)
+  offerLetterId        String?     @map("offer_letter_id") @db.Uuid
+  issuedAt             DateTime?   @map("issued_at") @db.Timestamptz(6)
+  respondedAt          DateTime?   @map("responded_at") @db.Timestamptz(6)
+  declineReason        String?     @map("decline_reason")
+  createdById          String      @map("created_by_id") @db.Uuid
+  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  application Application        @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Restrict)
+  offerLetter CandidateDocument? @relation(fields: [offerLetterId], references: [id], onDelete: SetNull)
+  createdBy   User               @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  onboarding  OnboardingRecord?
+
+  // Note: "at most one active offer per application" is a partial unique index in extra-constraints.sql
+  @@unique([organizationId, id])
+  @@index([organizationId, applicationId, status])
+  @@index([organizationId, status, expiresAt])
+  @@map("offers")
+}
+
+model OnboardingRecord {
+  id                       String            @id @default(uuid(7)) @db.Uuid
+  organizationId           String            @map("organization_id") @db.Uuid
+  applicationId            String            @map("application_id") @db.Uuid
+  offerId                  String            @map("offer_id") @db.Uuid
+  status                   OnboardingStatus  @default(NOT_STARTED)
+  // Details collected from / verified with the candidate
+  personalDetailsVerified  Boolean           @default(false) @map("personal_details_verified")
+  addressLine1             String?           @map("address_line1")
+  addressLine2             String?           @map("address_line2")
+  city                     String?
+  state                    String?
+  postalCode               String?           @map("postal_code")
+  country                  String?
+  emergencyContactName     String?           @map("emergency_contact_name")
+  emergencyContactRelation String?           @map("emergency_contact_relation")
+  emergencyContactPhone    String?           @map("emergency_contact_phone")
+  // Employment details
+  joiningDate              DateTime?         @map("joining_date") @db.Date
+  departmentId             String?           @map("department_id") @db.Uuid
+  designation              String?
+  assignedLocation         String?           @map("assigned_location")
+  // Approval and joining (a person is only Joined when HR records it)
+  approvedById             String?           @map("approved_by_id") @db.Uuid
+  approvedAt               DateTime?         @map("approved_at") @db.Timestamptz(6)
+  joinedAt                 DateTime?         @map("joined_at") @db.Timestamptz(6)
+  // Hand-over to an external employee system (e.g. CafeOS) through its API.
+  // Only a reference is stored; there is no link to any outside database.
+  employeeLinkId           String?           @map("employee_link_id") @db.Uuid
+  integrationStatus        IntegrationStatus @default(NOT_APPLICABLE) @map("integration_status")
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  application  Application           @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Restrict)
+  offer        Offer                 @relation(fields: [organizationId, offerId], references: [organizationId, id], onDelete: Restrict)
+  department   Department?           @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: NoAction)
+  employeeLink ExternalEmployeeLink? @relation(fields: [organizationId, employeeLinkId], references: [organizationId, id], onDelete: NoAction)
+  approvedBy   User?                 @relation("OnboardingApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  documents    OnboardingDocument[]
+
+  @@unique([organizationId, applicationId])
+  @@unique([organizationId, offerId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([organizationId, integrationStatus])
+  @@map("onboarding_records")
+}
+
+// The document checklist for onboarding
+model OnboardingDocument {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  organizationId String              @map("organization_id") @db.Uuid
+  onboardingId   String              @map("onboarding_id") @db.Uuid
+  kind           DocumentKind // IDENTITY, EDUCATION, OTHER...
+  label          String // e.g. "ID proof", "Degree certificate"
+  required       Boolean             @default(true)
+  status         OnboardingDocStatus @default(PENDING)
+  documentId     String?             @map("document_id") @db.Uuid
+  remarks        String?
+  verifiedById   String?             @map("verified_by_id") @db.Uuid
+  verifiedAt     DateTime?           @map("verified_at") @db.Timestamptz(6)
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  onboarding OnboardingRecord   @relation(fields: [organizationId, onboardingId], references: [organizationId, id], onDelete: Cascade)
+  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  verifiedBy User?              @relation(fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, onboardingId, status])
+  @@map("onboarding_documents")
+}
+
+// ----------------------------------------------------------------------------
+// NOTIFICATIONS AND AUDIT LOG
+// ----------------------------------------------------------------------------
+
+// Doubles as the communication history. Emails are only marked SENT when a real
+// provider actually delivered them; with no provider they stay PENDING/SKIPPED.
+model Notification {
+  id              String              @id @default(uuid(7)) @db.Uuid
+  organizationId  String              @map("organization_id") @db.Uuid
+  type            NotificationType
+  channel         NotificationChannel @default(IN_APP)
+  recipientUserId String?             @map("recipient_user_id") @db.Uuid
+  recipientEmail  String?             @map("recipient_email")
+  applicationId   String?             @map("application_id") @db.Uuid
+  subject         String
+  body            String
+  status          NotificationStatus  @default(PENDING)
+  error           String?
+  scheduledFor    DateTime?           @map("scheduled_for") @db.Timestamptz(6)
+  sentAt          DateTime?           @map("sent_at") @db.Timestamptz(6)
+  readAt          DateTime?           @map("read_at") @db.Timestamptz(6)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  recipient    User?        @relation(fields: [recipientUserId], references: [id], onDelete: SetNull)
+  application  Application? @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: NoAction)
+
+  @@index([recipientUserId, readAt])
+  @@index([organizationId, status, scheduledFor])
+  @@index([organizationId, applicationId])
+  @@map("notifications")
+}
+
+// Append-only record of important actions. Never edited or deleted by the app.
+// organization_id is empty for platform-level actions.
+model AuditLog {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid // empty = system, public candidate or integration
+  actorLabel     String?  @map("actor_label") // e.g. "candidate:APP-..." or "system:cafeos"
+  action         String // e.g. "application.stage_changed"
+  entityType     String   @map("entity_type")
+  entityId       String?  @map("entity_id")
+  metadata       Json?
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+// ----------------------------------------------------------------------------
+// INTEGRATION (CafeOS and any future system) - API only, never a database link
+// ----------------------------------------------------------------------------
+
+// Settings for connecting one organization to one external system.
+model IntegrationConnection {
+  id                String                      @id @default(uuid(7)) @db.Uuid
+  organizationId    String                      @map("organization_id") @db.Uuid
+  system            IntegrationSystem           @default(CAFEOS)
+  status            IntegrationConnectionStatus @default(NOT_CONFIGURED)
+  baseUrl           String?                     @map("base_url")
+  externalTenantRef String?                     @map("external_tenant_ref") // this company's id inside the other system
+  // A reference to where the secret key is kept (environment / secret manager).
+  // The secret itself is never stored in plain text in this database.
+  secretReference   String?                     @map("secret_reference")
+  lastSuccessAt     DateTime?                   @map("last_success_at") @db.Timestamptz(6)
+  lastErrorAt       DateTime?                   @map("last_error_at") @db.Timestamptz(6)
+  lastErrorMessage  String?                     @map("last_error_message")
+  createdAt         DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employeeLinks  ExternalEmployeeLink[]
+  entityMappings ExternalEntityMapping[]
+  syncJobs       IntegrationSyncJob[]
+
+  @@unique([organizationId, system])
+  @@unique([organizationId, id])
+  @@map("integration_connections")
+}
+
+// Employee ID mapping: our person <-> the employee in the external system.
+// Only a reference is kept (id, code, display name); employee master data stays
+// in the other system.
+model ExternalEmployeeLink {
+  id                   String             @id @default(uuid(7)) @db.Uuid
+  organizationId       String             @map("organization_id") @db.Uuid
+  connectionId         String             @map("connection_id") @db.Uuid
+  externalEmployeeId   String?            @map("external_employee_id") // empty until matched / created
+  externalEmployeeCode String?            @map("external_employee_code")
+  displayName          String?            @map("display_name")
+  status               EmployeeLinkStatus @default(PENDING_MATCH)
+  lastSyncedAt         DateTime?          @map("last_synced_at") @db.Timestamptz(6)
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  connection            IntegrationConnection  @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Restrict)
+  organizationCandidate OrganizationCandidate?
+  onboardingRecords     OnboardingRecord[]
+
+  @@unique([connectionId, externalEmployeeId]) // an outside employee can be linked only once
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@map("external_employee_links")
+}
+
+// Same idea for departments, locations, roles and staff users.
+model ExternalEntityMapping {
+  id             String             @id @default(uuid(7)) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  connectionId   String             @map("connection_id") @db.Uuid
+  entityType     ExternalEntityType @map("entity_type")
+  localId        String             @map("local_id") @db.Uuid
+  externalId     String             @map("external_id")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  connection IntegrationConnection @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([connectionId, entityType, localId])
+  @@unique([connectionId, entityType, externalId])
+  @@index([organizationId, entityType])
+  @@map("external_entity_mappings")
+}
+
+// The send queue (outbox). Created in the same transaction as the business
+// change, then processed by a background worker with retries.
+model IntegrationSyncJob {
+  id              String        @id @default(uuid(7)) @db.Uuid
+  organizationId  String        @map("organization_id") @db.Uuid
+  connectionId    String        @map("connection_id") @db.Uuid
+  entityType      String        @map("entity_type") // e.g. "onboarding_record"
+  entityId        String        @map("entity_id") @db.Uuid
+  operation       String // e.g. "create_employee", "lookup_employee"
+  direction       SyncDirection @default(OUTBOUND)
+  status          SyncStatus    @default(PENDING)
+  // Prevents duplicates: the same key can never create a second job
+  idempotencyKey  String        @map("idempotency_key")
+  attemptCount    Int           @default(0) @map("attempt_count")
+  maxAttempts     Int           @default(5) @map("max_attempts")
+  nextAttemptAt   DateTime?     @map("next_attempt_at") @db.Timestamptz(6)
+  payload         Json? // only the approved fields that are sent
+  responseSummary Json?         @map("response_summary")
+  externalRef     String?       @map("external_ref")
+  lockedAt        DateTime?     @map("locked_at") @db.Timestamptz(6)
+  completedAt     DateTime?     @map("completed_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  connection IntegrationConnection  @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Restrict)
+  errors     IntegrationSyncError[]
+
+  @@unique([connectionId, idempotencyKey])
+  @@unique([organizationId, id])
+  @@index([status, nextAttemptAt])
+  @@index([entityType, entityId])
+  @@index([organizationId, status])
+  @@map("integration_sync_jobs")
+}
+
+// One row per failed attempt. Append-only.
+model IntegrationSyncError {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  syncJobId      String   @map("sync_job_id") @db.Uuid
+  attemptNumber  Int      @map("attempt_number")
+  httpStatus     Int?     @map("http_status")
+  errorCode      String?  @map("error_code")
+  message        String
+  occurredAt     DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  syncJob IntegrationSyncJob @relation(fields: [organizationId, syncJobId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([syncJobId, attemptNumber])
+  @@index([organizationId, occurredAt])
+  @@map("integration_sync_errors")
+}
+
+// Keys that let an external system (e.g. CafeOS) call this system's API.
+// Only a hash of the key is stored.
+model ApiClient {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  keyPrefix      String    @map("key_prefix") // first few characters, for display only
+  keyHash        String    @unique @map("key_hash")
+  scopes         String[]
+  createdById    String?   @map("created_by_id") @db.Uuid
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@map("api_clients")
+}
