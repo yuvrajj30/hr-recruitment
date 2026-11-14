@@ -1,0 +1,62 @@
+// Every permission the app knows about. Code asks for these names (never for a role name such as "ADMIN"),
+// so who may do what can change in the database without touching code.
+//
+// This list must match the permissions created by prisma/seed.ts; a test compares the two,
+// so a typo here (or a permission added to only one place) fails the tests instead of silently denying access.
+
+export const PERMISSION_KEYS = [
+  "org:read",
+  "org:update",
+  "member:read",
+  "member:invite",
+  "member:update",
+  "member:remove",
+  "member:assign_role",
+  "department:read",
+  "department:manage",
+  "job:read",
+  "job:create",
+  "job:update",
+  "job:publish",
+  "job:close",
+  "job:delete",
+  "candidate:read",
+  "candidate:read_assigned",
+  "candidate:create",
+  "candidate:update",
+  "candidate:delete",
+  "application:read",
+  "application:read_assigned",
+  "application:create",
+  "application:move_stage",
+  "application:assign",
+  "application:note",
+  "form:read",
+  "form:manage",
+  "form:assign",
+  "interview:read",
+  "interview:read_assigned",
+  "interview:schedule",
+  "interview:update",
+  "interview:cancel",
+  "feedback:submit",
+  "feedback:read",
+  "decision:read",
+  "decision:make",
+  "offer:read",
+  "offer:create",
+  "offer:issue",
+  "offer:withdraw",
+  "onboarding:read",
+  "onboarding:manage",
+  "onboarding:approve",
+  "integration:read",
+  "integration:manage",
+  "report:read",
+  "audit:read",
+] as const;
+
+export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+// Resources that have both "read everything" and "read only what is assigned to me".
+export type AssignableResource = "candidate" | "application" | "interview";
