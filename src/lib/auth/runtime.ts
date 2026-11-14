@@ -4,7 +4,8 @@ import { getDb, type Db } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { verifyPassword } from "@/lib/security/password";
 import { writeAudit } from "./audit";
-import { type SessionTimings, sessionTimings } from "./config";
+import { LOGIN_LIMITS, type SessionTimings, sessionTimings } from "./config";
+import { type ConcurrencyGate, createConcurrencyGate } from "./concurrency-gate";
 import type { LoginDeps } from "./login-service";
 
 // Everything the auth handlers need from the outside world, in one object.
@@ -24,7 +25,13 @@ export type AuthRuntime = {
   deps: LoginDeps; // the password check and the audit writer
   runLater: (task: () => Promise<void>) => void; // runs after the response has been sent
   shouldRunCleanup: () => boolean;
+  loginGate: ConcurrencyGate; // caps how many password checks run at once
 };
+
+// One gate for the whole server process (kept on globalThis so development reloads do not reset it).
+const globalForGate = globalThis as unknown as { __hrLoginGate?: ConcurrencyGate };
+const getLoginGate = (): ConcurrencyGate =>
+  (globalForGate.__hrLoginGate ??= createConcurrencyGate(LOGIN_LIMITS.maxConcurrentLogins));
 
 export function getAuthRuntime(): AuthRuntime {
   const env = getEnv();
@@ -41,5 +48,6 @@ export function getAuthRuntime(): AuthRuntime {
     runLater: (task) => after(task),
     // About 1 login in 50 also tidies old rows, so no separate scheduler is needed to keep the tables small.
     shouldRunCleanup: () => Math.random() < 0.02,
+    loginGate: getLoginGate(),
   };
 }

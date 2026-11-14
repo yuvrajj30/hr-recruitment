@@ -11,7 +11,8 @@ export type ErrorCode =
   | "payload_too_large" // 413
   | "unsupported_media_type" // 415
   | "too_many_attempts" // 429
-  | "server_error"; // 500
+  | "server_error" // 500
+  | "server_busy"; // 503  too many logins at once; try again in a moment
 
 type Options = {
   cookies?: string[]; // each value becomes its own Set-Cookie header

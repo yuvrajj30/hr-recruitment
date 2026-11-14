@@ -13,6 +13,7 @@ import {
   handleSession,
   handleSwitchOrganization,
 } from "@/lib/auth/handlers";
+import { createConcurrencyGate } from "@/lib/auth/concurrency-gate";
 import type { AuthRuntime } from "@/lib/auth/runtime";
 import { createSession } from "@/lib/auth/session-store";
 import { createDb, type Db } from "@/lib/db";
@@ -86,6 +87,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       },
       runLater: (task) => void tasks.push(task),
       shouldRunCleanup: () => false,
+      loginGate: createConcurrencyGate(8),
       ...over,
     };
     return { rt, audits, tasks, calls, clock };
@@ -358,6 +360,53 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       expect(res.status).toBe(500);
       expect(await res.text()).toBe('{"error":"server_error"}');
       expect(written.join("")).toContain("APP_ORIGIN: must be an https:// address in production");
+    });
+    it("turns extra logins away with a quick 503 while the limit is reached, and recovers afterwards", async () => {
+      const f = await fixture();
+      let letGo!: () => void;
+      const held = new Promise<void>((resolve) => (letGo = resolve));
+      let started!: () => void;
+      const firstIsRunning = new Promise<void>((resolve) => (started = resolve));
+      const { rt, calls } = makeRuntime({
+        loginGate: createConcurrencyGate(1),
+        deps: {
+          verifyPassword: async (plain, hash) => {
+            calls.push({ plain, hash });
+            started();
+            await held; // the first login stays "in progress" until we say so
+            return hash === `fake:${plain}`;
+          },
+          writeAudit: async () => {},
+        },
+      });
+      const first = handleLogin(post("/api/auth/login", { email: f.email, password: PASSWORD }), rt);
+      await firstIsRunning;
+
+      const refused = await handleLogin(post("/api/auth/login", { email: f.email, password: PASSWORD }), rt);
+      expect(refused.status).toBe(503);
+      expect(await refused.text()).toBe('{"error":"server_busy"}');
+      expect(refused.headers.get("retry-after")).toBe("3");
+      expect(refused.headers.getSetCookie()).toEqual([]);
+      expect(calls).toHaveLength(1); // the refused request never reached the password check
+      expect(await attemptCount(f.email)).toBe(1); // ...and left no database row of its own
+
+      letGo();
+      expect((await first).status).toBe(200);
+      expect(rt.loginGate.inFlight).toBe(0);
+      // The place was given back, so the next login is accepted.
+      rt.now = () => at(5000);
+      expect((await handleLogin(post("/api/auth/login", { email: f.email, password: PASSWORD }), rt)).status).toBe(200);
+    });
+    it("gives its place back even when the login fails unexpectedly", async () => {
+      const f = await fixture();
+      const gate = createConcurrencyGate(1);
+      const { rt } = makeRuntime({
+        loginGate: gate,
+        deps: { verifyPassword: async () => { throw new Error("boom"); }, writeAudit: async () => {} },
+      });
+      const res = await guarded("login", (r) => handleLogin(r, rt))(post("/api/auth/login", { email: f.email, password: PASSWORD }));
+      expect(res.status).toBe(500);
+      expect(gate.inFlight).toBe(0);
     });
     it("ends an older session that the browser still held", async () => {
       const f = await fixture();

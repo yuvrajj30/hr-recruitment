@@ -4,7 +4,7 @@ import { getClientIp } from "@/lib/security/client-ip";
 import { logger } from "@/lib/security/logger";
 import { readJsonBody } from "@/lib/http/body";
 import { errorResponse, jsonResponse } from "@/lib/http/responses";
-import { REQUEST_LIMITS } from "./config";
+import { LOGIN_LIMITS, REQUEST_LIMITS } from "./config";
 import { type AuthContext, getAuthContext } from "./context";
 import { buildClearedSessionCookie, buildSessionCookie, readSessionToken, sessionCookieName } from "./cookies";
 import { loginWithPassword } from "./login-service";
@@ -77,21 +77,33 @@ export async function handleLogin(request: Request, rt: AuthRuntime): Promise<Re
   const parsed = loginBodySchema.safeParse(body.value);
   if (!parsed.success) return errorResponse("invalid_request", 400); // no field details: nothing to learn
 
+  // Only so many logins may run at once (each costs real CPU). Extra ones are turned away right
+  // here, before any database or password work, so a flood stays cheap.
+  const release = rt.loginGate.tryEnter();
+  if (!release) {
+    return errorResponse("server_busy", 503, { headers: { "retry-after": String(LOGIN_LIMITS.busyRetryAfterSeconds) } });
+  }
+
   const { ipAddress, userAgent } = clientInfo(request, rt);
   const now = rt.now();
-  const result = await loginWithPassword(
-    rt.db,
-    {
-      email: parsed.data.email,
-      password: parsed.data.password,
-      ipAddress,
-      userAgent,
-      now,
-      timings: rt.timings,
-      authSecret: rt.authSecret,
-    },
-    rt.deps,
-  );
+  let result: Awaited<ReturnType<typeof loginWithPassword>>;
+  try {
+    result = await loginWithPassword(
+      rt.db,
+      {
+        email: parsed.data.email,
+        password: parsed.data.password,
+        ipAddress,
+        userAgent,
+        now,
+        timings: rt.timings,
+        authSecret: rt.authSecret,
+      },
+      rt.deps,
+    );
+  } finally {
+    release(); // always give the place back, even if something failed
+  }
 
   if (!result.ok) {
     if (result.reason === "throttled") {

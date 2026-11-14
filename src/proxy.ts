@@ -27,6 +27,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Skip the API (its routes check sessions themselves), Next.js internals, and files with an extension.
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  // Skip the API folder (its routes check sessions themselves), Next.js internals, and files with an
+  // extension. "api" must be the whole folder name, so a future page such as /apiary is still protected.
+  matcher: ["/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };

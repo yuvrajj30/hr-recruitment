@@ -33,6 +33,7 @@ export function interpretLoginResponse(status: number, body: unknown): LoginOutc
     return { kind: "error", message: `Too many sign-in attempts. Please wait ${formatWait(data.retryAfterSeconds)} and try again.` };
   }
   if (status === 403) return { kind: "error", message: "This request was blocked for safety. Reload the page and try again." };
+  if (status === 503) return { kind: "error", message: "The server is busy right now. Please try again in a few seconds." };
   if (status === 400) return { kind: "error", message: "Enter your email address and your password." };
   return { kind: "error", message: GENERIC_ERROR_MESSAGE };
 }

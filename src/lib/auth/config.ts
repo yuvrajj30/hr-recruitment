@@ -16,6 +16,14 @@ export const REQUEST_LIMITS = {
   maxPasswordLength: 1024,
 } as const;
 
+// How many logins may be running at the same moment in one server process. Each one costs a
+// quarter second of CPU for the password check, so more than this are turned away with a quick
+// "busy" answer instead of piling up.
+export const LOGIN_LIMITS = {
+  maxConcurrentLogins: 8,
+  busyRetryAfterSeconds: 3,
+} as const;
+
 // Where a user lands after signing in when no safe "next" address was given.
 export const DEFAULT_LOGIN_REDIRECT = "/dashboard";
 

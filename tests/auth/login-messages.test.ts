@@ -38,7 +38,8 @@ describe("login messages", () => {
   it("has a clear message for each refusal, and a safe generic one for everything else", () => {
     const messages = new Set([400, 401, 403, 429, 500].map((s) => (interpretLoginResponse(s, {}) as { message: string }).message));
     expect(messages.size).toBe(5);
-    for (const status of [413, 415, 500, 502, 503, 0]) {
+    expect((interpretLoginResponse(503, {}) as { message: string }).message).toMatch(/busy/);
+    for (const status of [413, 415, 500, 502, 0]) {
       expect(interpretLoginResponse(status, { error: "boom", detail: "secret" })).toEqual({ kind: "error", message: GENERIC_ERROR_MESSAGE });
     }
   });
