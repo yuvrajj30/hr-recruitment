@@ -1,26 +1,111 @@
 @import "tailwindcss";
 
+/*
+  Design tokens. Every colour in the app comes from here, so light and dark mode (and, later, an
+  organisation's brand colour) change in one place. Neutral greys plus ONE accent: deep indigo.
+  Status colours are used only when they carry meaning (success, warning, danger, info).
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --background: #f7f7f8;
+  --surface: #ffffff;
+  --surface-muted: #f3f4f6;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --fg: #18181b;
+  --fg-muted: #52525b;
+  --fg-subtle: #6b6b74;
+  --accent: #4338ca;
+  --accent-hover: #3730a3;
+  --accent-soft: #eef2ff;
+  --accent-fg: #3730a3;
+  --on-accent: #ffffff;
+  --ring: #6366f1;
+  --success: #15803d;
+  --success-soft: #f0fdf4;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --danger: #b91c1c;
+  --danger-soft: #fef2f2;
+  --info: #1d4ed8;
+  --info-soft: #eff6ff;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #0b0b0f;
+    --surface: #131318;
+    --surface-muted: #1c1c22;
+    --border: #27272f;
+    --border-strong: #3f3f46;
+    --fg: #f4f4f5;
+    --fg-muted: #b4b4bc;
+    --fg-subtle: #8f8f99;
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-soft: #1e1b4b;
+    --accent-fg: #c7d2fe;
+    --on-accent: #0b0b0f;
+    --ring: #818cf8;
+    --success: #4ade80;
+    --success-soft: #052e16;
+    --warning: #fbbf24;
+    --warning-soft: #2a1a04;
+    --danger: #f87171;
+    --danger-soft: #2a0a0a;
+    --info: #60a5fa;
+    --info-soft: #0b1a33;
+    color-scheme: dark;
   }
 }
 
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-on-accent: var(--on-accent);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html,
 body {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers line up in tables and figures. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Respect the system's "reduce motion" setting everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
