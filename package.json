@@ -11,7 +11,9 @@
     "test:db": "vitest run tests/db",
     "db:verify-roles": "tsx scripts/verify-db-roles.ts",
     "db:verify-extra": "tsx scripts/verify-db-extra.ts",
-    "auth:cleanup": "tsx --conditions=react-server scripts/auth-cleanup.ts"
+    "auth:cleanup": "tsx --conditions=react-server scripts/auth-cleanup.ts",
+    "auth:set-password": "tsx --conditions=react-server scripts/set-password.ts",
+    "auth:list-users": "tsx scripts/list-users.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",
