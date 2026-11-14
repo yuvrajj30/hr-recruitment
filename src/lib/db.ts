@@ -9,11 +9,11 @@ import { getEnv } from "@/lib/env";
 export type Db = PrismaClient;
 
 // Builds a client for a given address. Tests use this with the disposable test database.
-export function createDb(connectionString: string): Db {
+export function createDb(connectionString: string, options: { max?: number } = {}): Db {
   return new PrismaClient({
     adapter: new PrismaPg({
       connectionString,
-      max: 10,
+      max: options.max ?? 10,
       connectionTimeoutMillis: 5_000,
       idleTimeoutMillis: 30_000,
     }),

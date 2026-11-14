@@ -40,8 +40,8 @@ describe.skipIf(!enabled)("session store (test database)", () => {
   const orgIds: string[] = [];
 
   beforeAll(() => {
-    owner = createDb(ownerUrl!);
-    db = createDb(runtimeUrl!);
+    owner = createDb(ownerUrl!, { max: 3 });
+    db = createDb(runtimeUrl!, { max: 4 });
   });
 
   afterAll(async () => {
@@ -371,14 +371,18 @@ describe.skipIf(!enabled)("session store (test database)", () => {
   // -------------------------------------------------------------------------
   describe("cleaning up old sessions", () => {
     it("deletes sessions that ended long ago and keeps everything else", async () => {
+      // Uses dates in 2020 so the clean-up can only ever touch rows made by THIS test,
+      // never rows that other test files (running at the same time) created.
+      const base = new Date("2020-03-01T10:00:00.000Z");
+      const when = (ms: number) => new Date(base.getTime() + ms);
       const f = await fixture();
-      const old = await login(f, t0); // idle and hard deadlines passed ~40 days before the purge
-      const nowPurge = at(40 * DAY + HOUR);
-      const active = await login(f, at(40 * DAY)); // still usable at purge time
-      const recentlyRevoked = await login(f, at(39 * DAY));
-      await owner.session.update({ where: { id: recentlyRevoked.sessionId }, data: { revokedAt: at(39 * DAY + MIN) } });
-      const longRevoked = await login(f, at(35 * DAY));
-      await owner.session.update({ where: { id: longRevoked.sessionId }, data: { revokedAt: at(1 * DAY) } });
+      const old = await login(f, base); // idle and hard deadlines passed ~40 days before the purge
+      const nowPurge = when(40 * DAY + HOUR);
+      const active = await login(f, when(40 * DAY)); // still usable at purge time
+      const recentlyRevoked = await login(f, when(39 * DAY));
+      await owner.session.update({ where: { id: recentlyRevoked.sessionId }, data: { revokedAt: when(39 * DAY + MIN) } });
+      const longRevoked = await login(f, when(35 * DAY));
+      await owner.session.update({ where: { id: longRevoked.sessionId }, data: { revokedAt: when(1 * DAY) } });
 
       const deleted = await purgeEndedSessions(db, nowPurge, 30);
       expect(deleted).toBeGreaterThanOrEqual(2);
