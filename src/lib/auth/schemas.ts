@@ -14,7 +14,11 @@ export const loginBodySchema = z
       .pipe(z.email()),
     // The password is NOT trimmed or changed in any way.
     password: z.string().min(1).max(REQUEST_LIMITS.maxPasswordLength),
+    // The page the person wanted before being sent to the login page. The server decides whether it is safe.
+    next: z.string().max(512).optional(),
   })
   .strict();
 
 export type LoginBody = z.infer<typeof loginBodySchema>;
+
+export const switchOrganizationBodySchema = z.object({ organizationId: z.uuid() }).strict();

@@ -78,12 +78,21 @@ const schema = z
 
 export type Env = z.infer<typeof schema>;
 
+// Thrown when a setting is missing or unsafe. Its message lists setting NAMES and problems only,
+// never values, so it is safe to show in logs.
+export class EnvError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EnvError";
+  }
+}
+
 export function parseEnv(source: Record<string, string | undefined>): Env {
   const result = schema.safeParse(source);
   if (!result.success) {
     const lines = result.error.issues.map((i) => `  - ${i.path.join(".") || "env"}: ${i.message}`);
     // Only setting NAMES and problems are listed, never the values.
-    throw new Error(`Invalid environment settings:\n${lines.join("\n")}`);
+    throw new EnvError(`Invalid environment settings:\n${lines.join("\n")}`);
   }
   return result.data;
 }
