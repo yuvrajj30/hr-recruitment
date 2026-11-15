@@ -11,10 +11,15 @@ describe("navigation", () => {
       "User and Role Management", "Integrations",
     ]);
   });
-  it("shows only released modules: today that is the dashboard, even for someone with every permission", () => {
+  it("shows only released modules: today the dashboard and recruitment, even for someone with every permission", () => {
     const everything = perms(...NAV_ITEMS.flatMap((i) => (i.requiresAny === "everyone" ? [] : [...i.requiresAny])));
-    expect(buildNavigation(everything).map((i) => i.key)).toEqual(["dashboard"]);
+    expect(buildNavigation(everything).map((i) => i.key)).toEqual(["dashboard", "recruitment"]);
     expect(buildNavigation(perms()).map((i) => i.key)).toEqual(["dashboard"]);
+  });
+  it("shows recruitment to people who can read jobs or applications, and to nobody else", () => {
+    expect(buildNavigation(perms("job:read")).map((i) => i.key)).toEqual(["dashboard", "recruitment"]);
+    expect(buildNavigation(perms("application:read_assigned")).map((i) => i.key)).toEqual(["dashboard", "recruitment"]);
+    expect(buildNavigation(perms("interview:read_assigned", "feedback:submit")).map((i) => i.key)).toEqual(["dashboard"]);
   });
   it("once a module ships, shows it only to people with one of its permissions", () => {
     const shipped = NAV_ITEMS.map((i) => ({ ...i, status: "available" as const }));

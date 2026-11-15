@@ -31,6 +31,7 @@ export const PERMISSION_KEYS = [
   "application:move_stage",
   "application:assign",
   "application:note",
+  "document:read",
   "form:read",
   "form:manage",
   "form:assign",

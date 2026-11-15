@@ -9,6 +9,13 @@ describe("proxy gate", () => {
     expect(gate("/login", true)).toEqual({ kind: "allow" });
     expect(gate("/login/", false)).toEqual({ kind: "allow" });
   });
+  it("lets candidates reach the public careers pages without an account, and nothing that merely looks like them", () => {
+    expect(gate("/careers/the-trust-coffee", false)).toEqual({ kind: "allow" });
+    expect(gate("/careers/the-trust-coffee/jobs/barista", false)).toEqual({ kind: "allow" });
+    expect(gate("/careers-admin", false).kind).toBe("redirect");
+    expect(gate("/recruitment/applications", false).kind).toBe("redirect");
+    expect(gate("/recruitment/candidates/x", false).kind).toBe("redirect");
+  });
   it("lets anyone with a session cookie through (the page itself checks the real session)", () => {
     expect(gate("/dashboard", true)).toEqual({ kind: "allow" });
     expect(gate("/", true)).toEqual({ kind: "allow" });

@@ -23,9 +23,9 @@ const ctxWith = (perms: string[], organization: AuthContext["organization"] = { 
 });
 
 describe("the permission list matches the database seed", () => {
-  it("has no duplicates and the expected 49 permissions", () => {
+  it("has no duplicates and the expected 50 permissions", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSION_KEYS.length);
-    expect(PERMISSION_KEYS).toHaveLength(49);
+    expect(PERMISSION_KEYS).toHaveLength(50);
   });
   it("is exactly the set of permissions that prisma/seed.ts creates", () => {
     const seed = readFileSync("prisma/seed.ts", "utf8");
