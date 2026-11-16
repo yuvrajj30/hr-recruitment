@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAuthRuntime } from "@/lib/auth/runtime";
 import { EMPLOYMENT_TYPE_LABELS, formatDate, WORK_MODE_LABELS } from "@/lib/recruitment/labels";
+import { MINIMUM_APPLICANT_AGE, privacyNoticePath } from "@/lib/recruitment/privacy-rules";
 import { getPublicOrganization, listPublicJobs } from "@/lib/recruitment/public-jobs";
 
 // The public list of an organisation's open jobs. Only published, public jobs whose deadline has not passed.
@@ -39,6 +40,12 @@ async function OpenJobs({ params }: { params: Promise<{ orgSlug: string }> }) {
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-fg sm:text-3xl">Work at {organization.name}</h1>
         <p className="mt-2 text-sm text-fg-muted">
           {jobs.length === 0 ? "There are no open jobs right now." : `${jobs.length} open job${jobs.length === 1 ? "" : "s"}. Choose one to read more and apply.`}
+        </p>
+        <p className="mt-1 text-[13px] text-fg-muted">
+          Applicants must be at least {MINIMUM_APPLICANT_AGE}.{" "}
+          <Link href={privacyNoticePath(organization.slug)} className="font-medium text-accent-fg underline">
+            How we handle your details
+          </Link>
         </p>
       </header>
 

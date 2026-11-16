@@ -29,7 +29,14 @@ export type PublicJob = {
   accepting: boolean; // false once the deadline has passed
 };
 
-export type PublicOrganization = { name: string; slug: string; timezone: string };
+export type PublicOrganization = {
+  name: string;
+  slug: string;
+  timezone: string;
+  privacyNoticeName: string | null; // the notice is complete once this and the contact are set
+  privacyContactEmail: string | null;
+  candidateRetentionMonths: number;
+};
 
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -104,14 +111,31 @@ function toPublicJob(
 // narrow database function answers "which ACTIVE organisation has this web address?" with only these fields.
 export async function findPublicOrganization(rawDb: Db, organizationSlug: string): Promise<(PublicOrganization & { id: string }) | null> {
   if (!SLUG.test(organizationSlug)) return null;
-  const rows = await publicApplyDb(rawDb).$queryRaw<{ id: string; name: string; slug: string; timezone: string }[]>`
-    SELECT "id", "name", "slug", "timezone" FROM "app_public_organization"(${organizationSlug})`;
-  return rows[0] ?? null;
+  const rows = await publicApplyDb(rawDb).$queryRaw<{
+    id: string; name: string; slug: string; timezone: string;
+    privacy_notice_name: string | null; privacy_contact_email: string | null; candidate_retention_months: number;
+  }[]>`
+    SELECT * FROM "app_public_organization"(${organizationSlug})`;
+  const r = rows[0];
+  return r
+    ? {
+        id: r.id, name: r.name, slug: r.slug, timezone: r.timezone,
+        privacyNoticeName: r.privacy_notice_name, privacyContactEmail: r.privacy_contact_email, candidateRetentionMonths: r.candidate_retention_months,
+      }
+    : null;
 }
 
 export async function getPublicOrganization(rawDb: Db, organizationSlug: string): Promise<PublicOrganization | null> {
   const org = await findPublicOrganization(rawDb, organizationSlug);
-  return org ? { name: org.name, slug: org.slug, timezone: org.timezone } : null;
+  if (!org) return null;
+  return {
+    name: org.name,
+    slug: org.slug,
+    timezone: org.timezone,
+    privacyNoticeName: org.privacyNoticeName,
+    privacyContactEmail: org.privacyContactEmail,
+    candidateRetentionMonths: org.candidateRetentionMonths,
+  };
 }
 
 export async function listPublicJobs(rawDb: Db, organizationSlug: string, now: Date): Promise<PublicJob[]> {

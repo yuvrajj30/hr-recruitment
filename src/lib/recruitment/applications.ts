@@ -10,6 +10,7 @@ import { publicApplyDb, staffDb } from "@/lib/db-context";
 import { type ApplicationInput, looksLikeReference, makeReferenceNumber, type ProfileSnapshot, readSnapshot, toSnapshot } from "./application-input";
 import { closed, conflict, duplicate, invalid, notFound } from "./errors";
 import { endOfDayInTimeZone } from "./job-input";
+import { type ApplicationConfirmations, PRIVACY_NOTICE_VERSION } from "./privacy-rules";
 import { findPublicOrganization } from "./public-jobs";
 import type { ResumeKind } from "./resume";
 import { type AnyStage, checkMove, PIPELINE_STAGES, type PipelineStage } from "./stages";
@@ -32,7 +33,7 @@ export type AppDeps = {
 
 export type ResumeUpload = { bytes: Uint8Array; kind: ResumeKind; safeName: string };
 
-export const PRIVACY_NOTICE_VERSION = "2026-11";
+export { PRIVACY_NOTICE_VERSION } from "./privacy-rules";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
 const isUniqueViolation = (error: unknown) => (error as { code?: unknown } | null)?.code === "P2002";
@@ -46,10 +47,12 @@ const isRawUniqueViolation = (error: unknown) => /23505|duplicate key value/i.te
 // The filter that every application query starts from. With the three fixed roles, reading applications
 // is all-or-nothing: Super Admins and HR Managers (application:read) see every application of their own
 // organisation; Employees see none. The organisation always comes from the server-side session.
-export function applicationScope(ctx: AuthContext): Prisma.ApplicationWhereInput {
+// Applications of a candidate whose personal data was removed are left out of every list, page and change;
+// only counts include them (`{ includeRemoved: true }`), so a job's numbers stay right.
+export function applicationScope(ctx: AuthContext, options: { includeRemoved?: boolean } = {}): Prisma.ApplicationWhereInput {
   const organizationId = requireOrganizationId(ctx);
   if (readScope(ctx.permissions, "application") === "none") throw new ForbiddenError("missing permission application:read");
-  return { organizationId };
+  return options.includeRemoved ? { organizationId } : { organizationId, organizationCandidate: { removedAt: null } };
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +68,9 @@ export async function applyPublicly(
   target: { organizationSlug: string; jobSlug: string },
   input: ApplicationInput,
   resume: ResumeUpload,
+  confirmations: ApplicationConfirmations,
 ): Promise<CreatedApplication> {
+  if (!confirmations.ageConfirmed) throw invalid("Please confirm your age.", { ageConfirmed: "Please confirm your age." });
   // Public context: the database lets this read only published, public jobs, and tells it which ACTIVE
   // organisation a web address belongs to. Nothing else.
   const org = await findPublicOrganization(deps.db, target.organizationSlug);
@@ -104,7 +109,8 @@ export async function applyPublicly(
             ${snapshot.experience ? JSON.stringify(snapshot.experience) : null}::jsonb,
             ${input.skills}::text[], ${input.source}::text, ${JSON.stringify(snapshot)}::jsonb, ${PRIVACY_NOTICE_VERSION},
             ${now}::timestamptz, ${resume.safeName}, ${storageKey}, ${resume.kind.mimeType}, ${resume.bytes.length}::int, ${sha256},
-            ${deps.client.ipAddress}::text, ${deps.client.userAgent}::text)`;
+            ${confirmations.ageConfirmed}::boolean)`;
+        // (No IP address or browser is passed: the applicant is not identified in the audit log.)
         const row = rows[0];
         if (!row) throw new Error("the application was not saved");
         return { id: row.application_id, referenceNumber: row.reference_number, candidateWasKnown: row.candidate_was_known };
@@ -112,6 +118,7 @@ export async function applyPublicly(
         const msg = String((error as Error)?.message ?? "");
         if (msg.includes("duplicate_application")) throw duplicate("An application for this job has already been received from this email address.");
         if (msg.includes("job_closed")) throw closed("This job is no longer accepting applications.");
+        if (msg.includes("age_not_confirmed")) throw invalid("Please confirm your age.", { ageConfirmed: "Please confirm your age." });
         if (isRawUniqueViolation(error) && attempt < 3) continue;
         throw error;
       }
@@ -129,9 +136,13 @@ export async function createApplicationManually(
   jobId: string,
   input: ApplicationInput,
   resume: ResumeUpload | null,
+  confirmations: ApplicationConfirmations,
 ): Promise<CreatedApplication> {
   const db = staffDb(deps.db, ctx); // the database checks who is asking (row-level security)
   requirePermission(ctx, "application:create");
+  if (!confirmations.ageConfirmed) {
+    throw invalid("Confirm that the candidate is at least 18.", { ageConfirmed: "Confirm that the candidate is at least 18." });
+  }
   const organizationId = requireOrganizationId(ctx);
   if (!isUuid(jobId)) throw invalid("Choose a job from the list.", { jobId: "Choose a job from the list." });
   const job = await db.jobOpening.findFirst({ where: { id: jobId, organizationId }, select: { status: true } });
@@ -203,6 +214,7 @@ async function saveApplication(
               createdById: p.actorUserId,
               consentAcceptedAt: now,
               privacyNoticeVersion: PRIVACY_NOTICE_VERSION,
+              ageConfirmedAt: now, // createApplicationManually refuses without the confirmation
               appliedAt: now,
             },
             select: { id: true, referenceNumber: true },
@@ -393,7 +405,8 @@ export async function listPipeline(rawDb: Db, ctx: AuthContext, filters: Pick<Ap
 export async function countApplicationsByStage(rawDb: Db, ctx: AuthContext, jobId: string): Promise<{ stage: AnyStage; count: number }[]> {
   const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   if (!isUuid(jobId)) return [];
-  const groups = await db.application.groupBy({ by: ["stage"], where: { AND: [applicationScope(ctx), { jobId }] }, _count: { _all: true } });
+  // Counts include candidates whose personal data was removed: their applications still happened.
+  const groups = await db.application.groupBy({ by: ["stage"], where: { AND: [applicationScope(ctx, { includeRemoved: true }), { jobId }] }, _count: { _all: true } });
   return groups.map((g) => ({ stage: g.stage, count: g._count._all }));
 }
 

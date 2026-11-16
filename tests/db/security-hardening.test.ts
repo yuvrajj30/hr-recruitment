@@ -24,6 +24,7 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   // called by the application
   app_public_organization: true, app_find_or_create_candidate_profile: true, app_submit_public_application: true,
   app_sign_in: true, app_my_password_matches: true, app_change_my_password: true, app_invitation_lookup: true, app_accept_invitation: true,
+  app_remove_candidate: true,
   // internal only
   app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,

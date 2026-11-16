@@ -7,6 +7,7 @@ import { readResume, singleString } from "@/lib/recruitment/action-helpers";
 import { allowPublicApplication, checkFormToken, getApplyLimiters, TRAP_FIELD } from "@/lib/recruitment/abuse";
 import { formDataToApplicationFields, parseApplicationInput } from "@/lib/recruitment/application-input";
 import { applyPublicly } from "@/lib/recruitment/applications";
+import { MINIMUM_APPLICANT_AGE } from "@/lib/recruitment/privacy-rules";
 import { RecruitmentError } from "@/lib/recruitment/errors";
 import type { FormState } from "@/lib/recruitment/form-state";
 import { recruitmentDeps } from "@/lib/recruitment/runtime";
@@ -42,6 +43,7 @@ export async function submitApplicationAction(organizationSlug: string, jobSlug:
     const parsed = parseApplicationInput(values);
     const fieldErrors: Record<string, string> = parsed.ok ? {} : { ...parsed.errors };
     if (singleString(formData, "consent") !== "yes") fieldErrors.consent = "Please agree so that we can process your application.";
+    if (singleString(formData, "ageConfirmed") !== "yes") fieldErrors.ageConfirmed = `You must be at least ${MINIMUM_APPLICANT_AGE} to apply.`;
     const file = await readResume(formData, true);
     if (!file.ok) fieldErrors.resume = file.message;
     if (!parsed.ok || !file.ok || !file.resume || Object.keys(fieldErrors).length > 0) return fail("Please check the highlighted fields.", values, fieldErrors);
@@ -52,7 +54,7 @@ export async function submitApplicationAction(organizationSlug: string, jobSlug:
       return fail("Too many applications have been sent in a short time. Please try again in a little while.", values);
     }
 
-    const created = await applyPublicly(deps, { organizationSlug, jobSlug }, parsed.value, file.resume);
+    const created = await applyPublicly(deps, { organizationSlug, jobSlug }, parsed.value, file.resume, { ageConfirmed: true });
     return { message: null, fieldErrors: {}, reference: created.referenceNumber, done: 1 };
   } catch (error) {
     unstable_rethrow(error);

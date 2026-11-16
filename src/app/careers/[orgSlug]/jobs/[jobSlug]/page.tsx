@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getAuthRuntime } from "@/lib/auth/runtime";
 import { issueFormToken, TRAP_FIELD } from "@/lib/recruitment/abuse";
 import { EMPLOYMENT_TYPE_LABELS, formatDate, formatPay, WORK_MODE_LABELS } from "@/lib/recruitment/labels";
+import { privacyNoticePath } from "@/lib/recruitment/privacy-rules";
 import { getPublicJob, getPublicOrganization } from "@/lib/recruitment/public-jobs";
 
 // The public page for one job: what candidates read, and the form they apply with.
@@ -102,6 +103,7 @@ async function JobAndForm({ params }: { params: Promise<{ orgSlug: string; jobSl
             trapField={TRAP_FIELD}
             organizationName={organization.name}
             jobTitle={job.title}
+            privacyHref={privacyNoticePath(organization.slug)}
           />
         ) : (
           <Alert tone="warning">The deadline for this job has passed, so it is no longer accepting applications.</Alert>

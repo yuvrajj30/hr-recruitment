@@ -6,6 +6,7 @@ import { actionFailure, readResume, signedInAction, singleString } from "@/lib/r
 import { formDataToApplicationFields, parseApplicationInput } from "@/lib/recruitment/application-input";
 import { addApplicationNote, assignRecruiter, createApplicationManually, moveApplicationStage } from "@/lib/recruitment/applications";
 import { updateCandidateNotes } from "@/lib/recruitment/candidates";
+import { MINIMUM_APPLICANT_AGE } from "@/lib/recruitment/privacy-rules";
 import type { FormState } from "@/lib/recruitment/form-state";
 import { isPipelineStage } from "@/lib/recruitment/stages";
 
@@ -22,6 +23,7 @@ export async function createApplicationAction(_prev: FormState, formData: FormDa
   const fieldErrors: Record<string, string> = parsed.ok ? {} : { ...parsed.errors };
   if (!values.jobId) fieldErrors.jobId = "Choose the job this application is for.";
   if (singleString(formData, "consent") !== "yes") fieldErrors.consent = "Confirm that the candidate agreed to their details being kept.";
+  if (singleString(formData, "ageConfirmed") !== "yes") fieldErrors.ageConfirmed = `Confirm that the candidate is at least ${MINIMUM_APPLICANT_AGE}.`;
   const file = await readResume(formData, false);
   if (!file.ok) fieldErrors.resume = file.message;
   if (!parsed.ok || !file.ok || Object.keys(fieldErrors).length > 0) {
@@ -30,7 +32,7 @@ export async function createApplicationAction(_prev: FormState, formData: FormDa
   let applicationId: string;
   try {
     const { ctx, deps } = await signedInAction();
-    applicationId = (await createApplicationManually(deps, ctx, values.jobId!, parsed.value, file.resume)).id;
+    applicationId = (await createApplicationManually(deps, ctx, values.jobId!, parsed.value, file.resume, { ageConfirmed: true })).id;
   } catch (error) {
     return actionFailure(error, "application.create", values);
   }

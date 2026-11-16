@@ -281,17 +281,22 @@ enum IntegrationStatus {
 // ----------------------------------------------------------------------------
 
 model Organization {
-  id                   String             @id @default(uuid(7)) @db.Uuid
-  slug                 String             @unique // public careers URL: /careers/<slug>
-  name                 String
-  status               OrganizationStatus @default(ACTIVE)
-  ownerUserId          String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
-  timezone             String             @default("UTC")
-  defaultCurrency      String             @default("INR") @map("default_currency")
+  id                       String             @id @default(uuid(7)) @db.Uuid
+  slug                     String             @unique // public careers URL: /careers/<slug>
+  name                     String
+  status                   OrganizationStatus @default(ACTIVE)
+  ownerUserId              String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
+  timezone                 String             @default("UTC")
+  defaultCurrency          String             @default("INR") @map("default_currency")
   // Super Admin's switch: may HR Managers invite Employee accounts? (on by default)
-  hrCanInviteEmployees Boolean            @default(true) @map("hr_can_invite_employees")
-  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  hrCanInviteEmployees     Boolean            @default(true) @map("hr_can_invite_employees")
+  // Candidate privacy notice: the name it is given in and the contact for privacy requests and complaints
+  // (the notice is not shown until both are set), and how long candidates who were not hired are kept.
+  privacyNoticeName        String?            @map("privacy_notice_name")
+  privacyContactEmail      String?            @map("privacy_contact_email")
+  candidateRetentionMonths Int                @default(12) @map("candidate_retention_months")
+  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   owner                  User                    @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   members                OrganizationMember[]
@@ -643,6 +648,7 @@ model OrganizationCandidate {
   employeeLinkId      String?       @map("employee_link_id") @db.Uuid
   claimedEmployeeCode String?       @map("claimed_employee_code") // what the applicant typed
   internalVerifiedAt  DateTime?     @map("internal_verified_at") @db.Timestamptz(6)
+  removedAt           DateTime?     @map("removed_at") @db.Timestamptz(6) // personal data removed (app_remove_candidate)
   tags                String[]
   notes               String? // company-level HR notes about the person
   firstSeenAt         DateTime      @default(now()) @map("first_seen_at") @db.Timestamptz(6)
@@ -657,6 +663,7 @@ model OrganizationCandidate {
   @@unique([organizationId, candidateId])
   @@unique([organizationId, id])
   @@unique([organizationId, employeeLinkId])
+  @@index([organizationId, removedAt])
   @@index([candidateId])
   @@index([organizationId, candidateType])
   @@map("organization_candidates")
@@ -791,6 +798,7 @@ model Application {
   statusTokenHash            String?          @unique @map("status_token_hash")
   consentAcceptedAt          DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
   privacyNoticeVersion       String?          @map("privacy_notice_version")
+  ageConfirmedAt             DateTime?        @map("age_confirmed_at") @db.Timestamptz(6) // confirmed being at least 18
   appliedAt                  DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
   createdAt                  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)

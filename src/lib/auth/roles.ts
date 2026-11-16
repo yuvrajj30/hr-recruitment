@@ -38,7 +38,8 @@ const SUPER_ADMIN_ONLY: readonly PermissionKey[] = [
   "user:manage_hr",
   "user:manage_super_admin",
   "job:delete",
-  "candidate:delete",
+  // (candidate:delete is NOT here: HR Managers may remove a candidate's personal data too, decided
+  // 16 Nov 2026; migration 20261117000000_candidate_privacy gives it to the HR Manager role.)
 ];
 
 // Everything an employee may do about THEMSELVES. Every role has these (HR Managers and Super Admins

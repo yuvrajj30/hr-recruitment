@@ -9,6 +9,7 @@ import { Card, CardBody } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { APPLICATION_LIMITS } from "@/lib/recruitment/application-input";
 import { EMPTY_FORM_STATE } from "@/lib/recruitment/form-state";
+import { MINIMUM_APPLICANT_AGE } from "@/lib/recruitment/privacy-rules";
 import { ApplicationFields } from "./application-fields";
 import { FormField, FormSection } from "./form-bits";
 
@@ -46,8 +47,13 @@ export function ManualApplicationForm({ jobs, defaultJobId }: { jobs: { id: stri
       <Card>
         <CardBody className="space-y-3">
           <label className="flex items-start gap-2.5 text-sm text-fg">
+            <input type="checkbox" name="ageConfirmed" value="yes" required className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" aria-invalid={errors.ageConfirmed ? true : undefined} />
+            <span>The candidate has confirmed they are at least {MINIMUM_APPLICANT_AGE} years old.</span>
+          </label>
+          {errors.ageConfirmed && <p className="text-xs font-medium text-danger">{errors.ageConfirmed}</p>}
+          <label className="flex items-start gap-2.5 text-sm text-fg">
             <input type="checkbox" name="consent" value="yes" required className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" aria-invalid={errors.consent ? true : undefined} />
-            <span>The candidate has agreed that their details and resume may be kept and used to consider them for this job.</span>
+            <span>The candidate has agreed that their details and resume may be kept and used to consider them for this job, as described in the organisation&apos;s candidate privacy notice.</span>
           </label>
           {errors.consent && <p className="text-xs font-medium text-danger">{errors.consent}</p>}
           <p className="text-xs text-fg-muted">

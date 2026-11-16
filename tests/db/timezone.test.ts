@@ -23,6 +23,9 @@ import { realRoleIds } from "./roles-helper";
 import { bindSessionToken } from "@/lib/auth/session-binding";
 import { giveSession, purgeTestAuditRows } from "./session-helper";
 
+// The applicant confirmed being at least 18 (required for every application since 2026-11-2).
+const AGE_OK = { ageConfirmed: true } as const;
+
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
@@ -160,14 +163,14 @@ describe.skipIf(!enabled)("timestamps and time zones (test database)", () => {
     const resume = { bytes: PDF, kind: { extension: "pdf" as const, mimeType: "application/pdf" }, safeName: "cv.pdf" };
     const deps = (client: Db): AppDeps => ({ db: client, now: new Date(), writeAudit: w.writeAudit, client: { ipAddress: null, userAgent: null }, storage: memoryStorage() });
     const target = { organizationSlug: w.org.slug, jobSlug: job.slug };
-    const ok = await applyPublicly(deps(db), target, input("utc"), resume);
+    const ok = await applyPublicly(deps(db), target, input("utc"), resume, AGE_OK);
     expect(ok.referenceNumber).toMatch(/^APP-/);
     if (serverOffsetMinutes > 120) {
       // The old behaviour: the app thinks the job is open, but the database sees the deadline as passed.
       const legacyJob = await ownerLegacy.jobOpening.create({
         data: { organizationId: w.org.id, slug: `job-${rnd()}`, title: "Legacy Deadline Job", description: "Written through a legacy connection.", employmentType: "FULL_TIME", workMode: "ON_SITE", status: "PUBLISHED", publishedAt: new Date(), applicationDeadline: deadline, createdById: w.admin.id },
       });
-      await expect(applyPublicly(deps(legacyDb), { organizationSlug: w.org.slug, jobSlug: legacyJob.slug }, input("legacy"), resume)).rejects.toThrow();
+      await expect(applyPublicly(deps(legacyDb), { organizationSlug: w.org.slug, jobSlug: legacyJob.slug }, input("legacy"), resume, AGE_OK)).rejects.toThrow();
     }
   });
 

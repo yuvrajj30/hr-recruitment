@@ -28,6 +28,9 @@ import { getPublicJob, listPublicJobs } from "@/lib/recruitment/public-jobs";
 import type { FileStorage } from "@/lib/recruitment/storage";
 import { giveSession, purgeTestAuditRows } from "./session-helper";
 
+// The applicant confirmed being at least 18 (required for every application since 2026-11-2).
+const AGE_OK = { ageConfirmed: true } as const;
+
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
@@ -161,7 +164,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   it("saves a public application with its resume, history and a reference number", async () => {
     const w = await world();
     const input = person();
-    const created = await applyPublicly(w.deps, w.target(w.job), input, resume());
+    const created = await applyPublicly(w.deps, w.target(w.job), input, resume(), AGE_OK);
     expect(created.referenceNumber).toMatch(/^APP-2026-[2-9A-Z]{6}$/);
     expect(created.candidateWasKnown).toBe(false);
 
@@ -190,10 +193,10 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const w = await world();
     const job2 = await w.makeJob({ title: "Cashier" });
     const first = person();
-    const a = await applyPublicly(w.deps, w.target(w.job), first, resume());
+    const a = await applyPublicly(w.deps, w.target(w.job), first, resume(), AGE_OK);
     // Same email typed with capitals and a different name: still the same person's profile, not overwritten.
     const second = person({ email: first.email.toUpperCase(), fullName: "Somebody Else", city: "Bhopal" });
-    const b = await applyPublicly(w.deps, w.target(job2), second, resume());
+    const b = await applyPublicly(w.deps, w.target(job2), second, resume(), AGE_OK);
     expect(b.candidateWasKnown).toBe(true);
 
     expect(await owner.candidateProfile.count({ where: { email: first.email } })).toBe(1);
@@ -212,8 +215,8 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   it("refuses a second application to the same job and removes the orphaned file", async () => {
     const w = await world();
     const input = person();
-    await applyPublicly(w.deps, w.target(w.job), input, resume());
-    await expect(applyPublicly(w.deps, w.target(w.job), input, resume())).rejects.toMatchObject({ code: "duplicate" });
+    await applyPublicly(w.deps, w.target(w.job), input, resume(), AGE_OK);
+    await expect(applyPublicly(w.deps, w.target(w.job), input, resume(), AGE_OK)).rejects.toMatchObject({ code: "duplicate" });
     expect(w.files.size).toBe(1);
     expect(await owner.application.count({ where: { jobId: w.job.id } })).toBe(1);
   });
@@ -221,7 +224,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   it("handles two identical submissions arriving at the same moment", async () => {
     const w = await world();
     const input = person();
-    const results = await Promise.allSettled([applyPublicly(w.deps, w.target(w.job), input, resume()), applyPublicly(w.deps, w.target(w.job), input, resume())]);
+    const results = await Promise.allSettled([applyPublicly(w.deps, w.target(w.job), input, resume(), AGE_OK), applyPublicly(w.deps, w.target(w.job), input, resume(), AGE_OK)]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "duplicate" } });
     expect(await owner.candidateProfile.count({ where: { email: input.email } })).toBe(1);
@@ -237,12 +240,12 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const expired = await w.makeJob({ title: "Expired", applicationDeadline: new Date(now.getTime() - 1000) });
     // Closed and archived jobs do not exist as far as the public is concerned (the public database context
     // can only see published jobs); a published job past its deadline is reported as closed.
-    await expect(applyPublicly(w.deps, w.target(closedJob), person(), resume())).rejects.toMatchObject({ code: "not_found" });
-    await expect(applyPublicly(w.deps, w.target(archived), person(), resume())).rejects.toMatchObject({ code: "not_found" });
-    await expect(applyPublicly(w.deps, w.target(expired), person(), resume())).rejects.toMatchObject({ code: "closed" });
-    await expect(applyPublicly(w.deps, w.target(draft), person(), resume())).rejects.toMatchObject({ code: "not_found" });
-    await expect(applyPublicly(w.deps, w.target(internal), person(), resume())).rejects.toMatchObject({ code: "not_found" });
-    await expect(applyPublicly(w.deps, { organizationSlug: "no-such-org", jobSlug: w.job.slug }, person(), resume())).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, w.target(closedJob), person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, w.target(archived), person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, w.target(expired), person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "closed" });
+    await expect(applyPublicly(w.deps, w.target(draft), person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, w.target(internal), person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, { organizationSlug: "no-such-org", jobSlug: w.job.slug }, person(), resume(), AGE_OK)).rejects.toMatchObject({ code: "not_found" });
     expect(w.files.size).toBe(0);
     expect(await owner.application.count({ where: { organizationId: w.org.id } })).toBe(0);
 
@@ -257,22 +260,22 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
 
   it("lets HR add an application by hand, with or without a resume", async () => {
     const w = await world();
-    const created = await createApplicationManually(w.deps, w.hr, w.job.id, person({ source: "Walk-in" }), null);
+    const created = await createApplicationManually(w.deps, w.hr, w.job.id, person({ source: "Walk-in" }), null, AGE_OK);
     const app = await getApplication(db, w.hr, created.id);
     expect(app).toMatchObject({ enteredByStaff: true, enteredByName: "Hema HR", source: "Walk-in", documents: [] });
     expect(app.history[0]).toMatchObject({ byName: "Hema HR" });
     expect(w.entries.at(-1)).toMatchObject({ action: "application.created_by_staff", actorUserId: w.hr.user.id });
 
-    await expect(createApplicationManually(w.deps, w.employee, w.job.id, person(), null)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(createApplicationManually(w.deps, w.employee, w.job.id, person(), null, AGE_OK)).rejects.toBeInstanceOf(ForbiddenError);
     const closedJob = await w.makeJob({ title: "Closed", status: "CLOSED" });
-    await expect(createApplicationManually(w.deps, w.hr, closedJob.id, person(), null)).rejects.toMatchObject({ code: "closed" });
+    await expect(createApplicationManually(w.deps, w.hr, closedJob.id, person(), null, AGE_OK)).rejects.toMatchObject({ code: "closed" });
     const other = await world();
-    await expect(createApplicationManually(w.deps, w.hr, other.job.id, person(), null)).rejects.toMatchObject({ code: "invalid" });
+    await expect(createApplicationManually(w.deps, w.hr, other.job.id, person(), null, AGE_OK)).rejects.toMatchObject({ code: "invalid" });
   });
 
   it("runs the full workflow: assign, note, review, shortlist, with complete history", async () => {
     const w = await world();
-    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume());
+    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume(), AGE_OK);
 
     // HR Managers see every application of their organisation, before and after it is assigned.
     expect((await getApplication(db, w.rec1, id)).recruiter).toBeNull();
@@ -308,7 +311,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
 
   it("validates stage moves and records rejection reasons", async () => {
     const w = await world();
-    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume());
+    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume(), AGE_OK);
     await expect(moveApplicationStage(w.deps, w.hr, id, "REJECTED")).rejects.toMatchObject({ code: "invalid" });
     await expect(moveApplicationStage(w.deps, w.hr, id, "APPLIED")).rejects.toMatchObject({ code: "conflict" });
     await expect(moveApplicationStage(w.deps, w.hr, id, "OFFER_ISSUED" as never)).rejects.toMatchObject({ code: "invalid" });
@@ -329,7 +332,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
 
   it("stops two people moving the same application at once", async () => {
     const w = await world();
-    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume());
+    const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume(), AGE_OK);
     // Both try the same move. Whether the database runs them together or one after the other,
     // exactly one may succeed; the other is told the application has already moved.
     const results = await Promise.allSettled([moveApplicationStage(w.deps, w.hr, id, "UNDER_REVIEW"), moveApplicationStage(w.deps, w.rec1, id, "UNDER_REVIEW")]);
@@ -340,7 +343,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
 
   it("keeps Employees out of every recruitment record and document", async () => {
     const w = await world();
-    const a = await applyPublicly(w.deps, w.target(w.job), person({ fullName: "Hidden Candidate" }), resume());
+    const a = await applyPublicly(w.deps, w.target(w.job), person({ fullName: "Hidden Candidate" }), resume(), AGE_OK);
     const app = await getApplication(db, w.hr, a.id);
     const e = w.employee;
     const refused = [
@@ -353,7 +356,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
       () => moveApplicationStage(w.deps, e, a.id, "UNDER_REVIEW"),
       () => addApplicationNote(w.deps, e, a.id, "peeking"),
       () => assignRecruiter(w.deps, e, a.id, w.rec1User.id),
-      () => createApplicationManually(w.deps, e, w.job.id, person(), null),
+      () => createApplicationManually(w.deps, e, w.job.id, person(), null, AGE_OK),
       () => updateCandidateNotes(w.deps, e, app.candidate.id, "x"),
       () => readDocument(w.deps, e, app.documents[0]!.id),
     ];
@@ -372,7 +375,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
 
   it("only an active HR Manager or Super Admin can be the responsible HR person", async () => {
     const w = await world();
-    const a = await applyPublicly(w.deps, w.target(w.job), person(), resume());
+    const a = await applyPublicly(w.deps, w.target(w.job), person(), resume(), AGE_OK);
     // The Employee is not offered, and cannot be chosen even by asking directly.
     expect((await listAssignableRecruiters(db, w.hr)).map((r) => r.name)).toEqual(["Hema HR", "Ravi Manager", "Rita Manager"]);
     await expect(assignRecruiter(w.deps, w.hr, a.id, w.empUser.id)).rejects.toMatchObject({ code: "invalid" });
@@ -395,8 +398,8 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const a = await world();
     const b = await world();
     const input = person();
-    const inA = await applyPublicly(a.deps, a.target(a.job), input, resume());
-    const inB = await applyPublicly(b.deps, b.target(b.job), person({ email: input.email, city: "Pune" }), resume());
+    const inA = await applyPublicly(a.deps, a.target(a.job), input, resume(), AGE_OK);
+    const inB = await applyPublicly(b.deps, b.target(b.job), person({ email: input.email, city: "Pune" }), resume(), AGE_OK);
     const appA = await getApplication(db, a.hr, inA.id);
 
     await expect(getApplication(db, b.hr, inA.id)).rejects.toMatchObject({ code: "not_found" });
@@ -418,9 +421,9 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const w = await world();
     const job2 = await w.makeJob({ title: "Cashier" });
     const at = (minutes: number) => ({ ...w.deps, now: new Date(now.getTime() + minutes * 60_000) });
-    const a = await applyPublicly(at(0), w.target(w.job), person({ fullName: "Zoya Khan" }), resume());
-    const b = await applyPublicly(at(1), w.target(w.job), person({ fullName: "Aman Gupta" }), resume());
-    const c = await applyPublicly(at(60 * 30), w.target(job2), person({ fullName: "Meera Nair" }), resume()); // the next day in India
+    const a = await applyPublicly(at(0), w.target(w.job), person({ fullName: "Zoya Khan" }), resume(), AGE_OK);
+    const b = await applyPublicly(at(1), w.target(w.job), person({ fullName: "Aman Gupta" }), resume(), AGE_OK);
+    const c = await applyPublicly(at(60 * 30), w.target(job2), person({ fullName: "Meera Nair" }), resume(), AGE_OK); // the next day in India
     await assignRecruiter(w.deps, w.hr, a.id, w.rec1User.id);
     await moveApplicationStage(at(5), w.hr, b.id, "SHORTLISTED");
 
@@ -447,9 +450,9 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   it("flags a possible duplicate person without merging, and saves HR notes", async () => {
     const w = await world();
     const first = person({ phone: "9812345678" });
-    const a = await applyPublicly(w.deps, w.target(w.job), first, resume());
+    const a = await applyPublicly(w.deps, w.target(w.job), first, resume(), AGE_OK);
     const job2 = await w.makeJob({ title: "Cashier" });
-    const b = await applyPublicly(w.deps, w.target(job2), person({ phone: "+91 98123 45678", fullName: "Asha V." }), resume());
+    const b = await applyPublicly(w.deps, w.target(job2), person({ phone: "+91 98123 45678", fullName: "Asha V." }), resume(), AGE_OK);
     const appA = await getApplication(db, w.hr, a.id);
     const appB = await getApplication(db, w.hr, b.id);
     expect(appA.candidate.id).not.toBe(appB.candidate.id); // different email: kept as two people

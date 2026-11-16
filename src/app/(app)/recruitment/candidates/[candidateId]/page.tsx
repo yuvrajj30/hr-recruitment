@@ -17,6 +17,8 @@ import { type CandidateDetail, getCandidate } from "@/lib/recruitment/candidates
 import { RecruitmentError } from "@/lib/recruitment/errors";
 import { getOrganizationSettings } from "@/lib/recruitment/jobs";
 import { formatDate, formatFileSize } from "@/lib/recruitment/labels";
+import { REMOVABLE_STAGES } from "@/lib/recruitment/privacy-rules";
+import { RemoveCandidateButton } from "@/components/recruitment/privacy-controls";
 
 export const metadata: Metadata = { title: "Candidate · HRMS" };
 
@@ -45,6 +47,9 @@ async function CandidateContent({ params }: { params: Promise<{ candidateId: str
   const { timezone } = await getOrganizationSettings(db, auth);
   const latest = c.latest;
   const canEditNotes = auth.permissions.has("candidate:update");
+  const canRemove = auth.permissions.has("candidate:delete");
+  // Removal is possible once every application is closed without a hire (the database checks this again).
+  const removable = c.applications.every((a) => (REMOVABLE_STAGES as readonly string[]).includes(a.stage));
 
   return (
     <div className="space-y-6">
@@ -215,6 +220,28 @@ async function CandidateContent({ params }: { params: Promise<{ candidateId: str
               )}
             </CardBody>
           </Card>
+
+          {canRemove && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Remove personal data</CardTitle>
+                  <CardDescription>
+                    For a candidate who asks to be removed, or whose data is no longer needed. Their details, resume and notes are deleted for good.
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardBody>
+                {removable ? (
+                  <RemoveCandidateButton candidateId={c.id} name={c.name} />
+                ) : (
+                  <p className="text-[13px] text-fg-muted">
+                    Not possible while an application is still open or ended in a hire. Reject or withdraw their open applications first.
+                  </p>
+                )}
+              </CardBody>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>

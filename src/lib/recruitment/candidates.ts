@@ -23,7 +23,8 @@ import type { AnyStage } from "./stages";
 function candidateScope(ctx: AuthContext): Prisma.OrganizationCandidateWhereInput {
   const organizationId = requireOrganizationId(ctx);
   if (readScope(ctx.permissions, "candidate") === "none") throw new ForbiddenError("missing permission candidate:read");
-  return { organizationId };
+  // A candidate whose personal data was removed is no longer listed or shown anywhere.
+  return { organizationId, removedAt: null };
 }
 
 // Which of a candidate's applications the reader may see.

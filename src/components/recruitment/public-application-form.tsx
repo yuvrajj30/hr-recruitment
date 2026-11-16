@@ -6,16 +6,18 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/recruitment/form-state";
+import { MINIMUM_APPLICANT_AGE } from "@/lib/recruitment/privacy-rules";
 import { ApplicationFields } from "./application-fields";
 
 // The application form candidates fill in. It works without JavaScript (a plain form post) and,
 // with it, shows errors in place and keeps what was typed.
-export function PublicApplicationForm({ action, formToken, trapField, organizationName, jobTitle }: {
+export function PublicApplicationForm({ action, formToken, trapField, organizationName, jobTitle, privacyHref }: {
   action: (state: FormState, formData: FormData) => Promise<FormState>;
   formToken: string;
   trapField: string;
   organizationName: string;
   jobTitle: string;
+  privacyHref: string;
 }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
 
@@ -54,9 +56,19 @@ export function PublicApplicationForm({ action, formToken, trapField, organizati
       <Card>
         <CardBody className="space-y-3">
           <label className="flex items-start gap-2.5 text-sm text-fg">
+            <input type="checkbox" name="ageConfirmed" value="yes" required className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" aria-invalid={errors.ageConfirmed ? true : undefined} />
+            <span>I am at least {MINIMUM_APPLICANT_AGE} years old.</span>
+          </label>
+          {errors.ageConfirmed && <p className="text-xs font-medium text-danger">{errors.ageConfirmed}</p>}
+          <label className="flex items-start gap-2.5 text-sm text-fg">
             <input type="checkbox" name="consent" value="yes" required className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" aria-invalid={errors.consent ? true : undefined} />
             <span>
-              I agree that {organizationName} may store and use the details and resume I have provided to consider me for this job and to contact me about it.
+              I agree that {organizationName} may store and use the details and resume I have provided to consider me for this job and to contact me
+              about it, as described in the{" "}
+              <a href={privacyHref} target="_blank" rel="noopener" className="font-medium text-accent-fg underline">
+                privacy notice
+              </a>
+              .
             </span>
           </label>
           {errors.consent && <p className="text-xs font-medium text-danger">{errors.consent}</p>}

@@ -26,6 +26,9 @@ async function Tabs() {
     tabs.push({ href: "/recruitment/applications", label: "Applications" });
     tabs.push({ href: "/recruitment/pipeline", label: "Pipeline" });
   }
-  if (readScope(auth.permissions, "candidate") !== "none") tabs.push({ href: "/recruitment/candidates", label: "Candidates" });
+  if (readScope(auth.permissions, "candidate") !== "none") {
+    tabs.push({ href: "/recruitment/candidates", label: "Candidates" });
+    tabs.push({ href: "/recruitment/privacy", label: "Privacy" });
+  }
   return <RecruitmentTabs tabs={tabs} />;
 }

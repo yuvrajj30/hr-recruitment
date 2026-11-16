@@ -272,7 +272,8 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
     // ...cannot list organisations (their owner and settings), only ask about one web address...
     expect(await count(pubA, "organizations")).toBe(0);
     const org = await as<Record<string, unknown>>(pubA, `SELECT * FROM app_public_organization($1)`, [`rls-a-${tag}`]);
-    expect(org.rows).toEqual([{ id: f.orgA, name: `rls-a-${tag}`, slug: `rls-a-${tag}`, timezone: expect.any(String) }]);
+    expect(org.rows).toEqual([{ id: f.orgA, name: `rls-a-${tag}`, slug: `rls-a-${tag}`, timezone: expect.any(String),
+      privacy_notice_name: null, privacy_contact_email: null, candidate_retention_months: 12 }]);
     expect((await as(HR(), `SELECT * FROM app_public_organization($1)`, [`rls-a-${tag}`])).rows).toEqual([]); // public pages only
     // ...and cannot write to those tables directly, however well-formed the row.
     expect((await as(pubA, `INSERT INTO applications (id, organization_id, reference_number, organization_candidate_id, job_id, consent_accepted_at, updated_at)
@@ -289,7 +290,7 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
   const submit = (who: Who, job: string, email: string, ref = `RLS-S-${rnd()}`) =>
     as<{ application_id: string; reference_number: string; candidate_was_known: boolean }>(who,
       `SELECT * FROM app_submit_public_application($1::uuid, $2, $3, 'New Person', NULL, 'Indore', NULL, NULL, '{"institution":"DAVV","graduationYear":2025}'::jsonb, NULL,
-         ARRAY['Espresso','espresso'], 'careers_page', '{}'::jsonb, '2026-11', now(), 'cv.pdf', $4, 'application/pdf', 10, 'abc', '203.0.113.5', 'vitest')`,
+         ARRAY['Espresso','espresso'], 'careers_page', '{}'::jsonb, '2026-11', now(), 'cv.pdf', $4, 'application/pdf', 10, 'abc', true)`,
       [job, ref, email, `resumes/2026/${rnd()}`]);
 
   it("saves a public application only through that function, only to an open public job of the organisation it was narrowed to", async () => {
@@ -299,7 +300,7 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
     await rt.query("BEGIN");
     try {
       await rt.query(`SELECT set_config('app.mode', 'public_apply', true), set_config('app.org_id', $1, true)`, [f.orgA]);
-      const r = (await rt.query(`SELECT * FROM app_submit_public_application($1::uuid, $2, $3, 'New Person', NULL, 'Indore', NULL, NULL, NULL, NULL, ARRAY['Espresso','espresso'], 'careers_page', '{}'::jsonb, '2026-11', now(), 'cv.pdf', $4, 'application/pdf', 10, 'abc', '203.0.113.5', 'vitest')`,
+      const r = (await rt.query(`SELECT * FROM app_submit_public_application($1::uuid, $2, $3, 'New Person', NULL, 'Indore', NULL, NULL, NULL, NULL, ARRAY['Espresso','espresso'], 'careers_page', '{}'::jsonb, '2026-11', now(), 'cv.pdf', $4, 'application/pdf', 10, 'abc', true)`,
         [f.jobA, `RLS-NEW-${tag}`, fresh, `resumes/2026/new-${tag}`])).rows[0];
       expect(r).toMatchObject({ reference_number: `RLS-NEW-${tag}`, candidate_was_known: false });
       // The caller got only the id and reference back, and still cannot read what was saved.
@@ -313,8 +314,8 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
       expect(saved).toEqual({ stage: "APPLIED", assigned_recruiter_id: null, created_by_id: null, history: 1, docs: 1 });
       // The audit record was written by the database itself (visible to the Super Admin).
       await rt.query(`SELECT set_config('app.session_token', $1, true)`, [await pgSessionToken(owner, f.sa, f.orgA)]);
-      const audit = (await rt.query(`SELECT actor_user_id, entity_id, metadata FROM audit_logs WHERE action = 'application.submitted' AND entity_id = $1`, [r.application_id])).rows;
-      expect(audit).toEqual([{ actor_user_id: null, entity_id: r.application_id, metadata: { reference: `RLS-NEW-${tag}`, jobId: f.jobA, knownCandidate: false, hasResume: true } }]);
+      const audit = (await rt.query(`SELECT actor_user_id, entity_id, metadata, ip_address, user_agent FROM audit_logs WHERE action = 'application.submitted' AND entity_id = $1`, [r.application_id])).rows;
+      expect(audit).toEqual([{ actor_user_id: null, entity_id: r.application_id, metadata: { reference: `RLS-NEW-${tag}`, jobId: f.jobA, knownCandidate: false, hasResume: true }, ip_address: null, user_agent: null }]);
     } finally {
       await rt.query("ROLLBACK");
     }
