@@ -51,7 +51,7 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
   const [{ timezone }, recruiters] = await Promise.all([getOrganizationSettings(db, auth), canAssign ? listAssignableRecruiters(db, auth) : Promise.resolve([])]);
   const s = app.snapshot;
 
-  // One timeline: stage changes and recruiter assignments, newest first.
+  // One timeline: stage changes and changes of the responsible HR person, newest first.
   const timeline = [
     ...app.history.map((h) => ({
       id: `h-${h.id}`,
@@ -63,7 +63,7 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
     ...app.assignments.map((a) => ({
       id: `a-${a.id}`,
       at: a.createdAt,
-      title: a.unassigned ? "Recruiter removed" : `Assigned to ${a.recruiterName ?? "a former team member"}`,
+      title: a.unassigned ? "Responsible person removed" : `Assigned to ${a.recruiterName ?? "a former team member"}`,
       by: a.byName,
       detail: null as string | null,
     })),
@@ -219,7 +219,7 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
 
           <Card>
             <CardHeader>
-              <CardTitle>Recruiter</CardTitle>
+              <CardTitle>Responsible HR person</CardTitle>
             </CardHeader>
             <CardBody className="space-y-3 text-[13px]">
               <p>

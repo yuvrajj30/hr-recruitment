@@ -4,6 +4,7 @@ import type { SessionTimings } from "./config";
 import { ForbiddenError } from "./errors";
 import type { PermissionKey } from "./permission-keys";
 import { type Access, loadAccess, NO_ACCESS } from "./permissions";
+import { bindSessionToken } from "./session-binding";
 import { type SessionDb, type SessionFailure, type SessionPrincipal, validateSession } from "./session-store";
 
 // "Who is asking, in which organization, and what may they do?" - built fresh for every request.
@@ -23,7 +24,10 @@ export async function getAuthContext(
   const { principal } = result;
   // No membership means no permissions. Being a "platform admin" gives no access to any company's data.
   const access = principal.memberId ? await loadAccess(db, principal.memberId) : NO_ACCESS;
-  return { ok: true, ctx: { ...principal, ...access } };
+  const ctx: AuthContext = { ...principal, ...access };
+  // The database works out who is asking from this session (never from an id the app states): see db-context.ts.
+  bindSessionToken(ctx, token as string);
+  return { ok: true, ctx };
 }
 
 // The organization every database query must be limited to. It comes from the server-side session,

@@ -11,7 +11,9 @@ export type GateDecision = { kind: "allow" } | { kind: "redirect"; location: str
 const PUBLIC_PATHS = new Set(["/login"]);
 // The public careers pages: job listings and application forms that candidates use without an account.
 // "/careers" must be the whole first folder, so a future page such as /careers-admin is still protected.
-const isPublicPath = (path: string) => PUBLIC_PATHS.has(path) || path === "/careers" || path.startsWith("/careers/");
+// Invitation links (/invite/<token>) are opened by people who do not have an account yet.
+const isPublicPath = (path: string) =>
+  PUBLIC_PATHS.has(path) || path === "/careers" || path.startsWith("/careers/") || path.startsWith("/invite/");
 
 export function decideGate(input: { pathname: string; search: string; hasSessionCookie: boolean }): GateDecision {
   const path = input.pathname.length > 1 ? input.pathname.replace(/\/+$/, "") : input.pathname;

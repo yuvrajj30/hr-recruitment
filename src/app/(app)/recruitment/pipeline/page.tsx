@@ -56,7 +56,7 @@ async function PipelineContent({ searchParams }: { searchParams: Promise<Query> 
     <div className="space-y-6">
       <PageHeader
         title="Pipeline"
-        description={scope === "assigned" ? "The applications assigned to you, by stage." : "Every application by stage. Drag a card to another column, or use its “Move to” menu."}
+        description="Every application by stage. Drag a card to another column, or use its “Move to” menu."
       />
 
       <Card>
@@ -79,7 +79,7 @@ async function PipelineContent({ searchParams }: { searchParams: Promise<Query> 
           </div>
           {scope === "all" && (
             <div className="space-y-1">
-              <Label htmlFor="p-recruiter">Recruiter</Label>
+              <Label htmlFor="p-recruiter">Responsible</Label>
               <Select id="p-recruiter" name="recruiter" defaultValue={filters.recruiter}>
                 <option value="">Anyone</option>
                 <option value="unassigned">Unassigned</option>

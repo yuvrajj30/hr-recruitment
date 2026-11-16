@@ -1,5 +1,6 @@
 import "server-only";
 import type { Db } from "@/lib/db";
+import { publicApplyDb } from "@/lib/db-context";
 import type { JobInput } from "./job-input";
 
 // What the public careers pages may read. No sign-in is involved, so these functions return ONLY
@@ -99,18 +100,29 @@ function toPublicJob(
   };
 }
 
-export async function getPublicOrganization(db: Db, organizationSlug: string): Promise<PublicOrganization | null> {
+// The public pages cannot read the organisations table at all (its rows hold the owner and settings). One
+// narrow database function answers "which ACTIVE organisation has this web address?" with only these fields.
+export async function findPublicOrganization(rawDb: Db, organizationSlug: string): Promise<(PublicOrganization & { id: string }) | null> {
   if (!SLUG.test(organizationSlug)) return null;
-  return db.organization.findFirst({ where: { slug: organizationSlug, status: "ACTIVE" }, select: { name: true, slug: true, timezone: true } });
+  const rows = await publicApplyDb(rawDb).$queryRaw<{ id: string; name: string; slug: string; timezone: string }[]>`
+    SELECT "id", "name", "slug", "timezone" FROM "app_public_organization"(${organizationSlug})`;
+  return rows[0] ?? null;
 }
 
-export async function listPublicJobs(db: Db, organizationSlug: string, now: Date): Promise<PublicJob[]> {
-  if (!SLUG.test(organizationSlug)) return [];
+export async function getPublicOrganization(rawDb: Db, organizationSlug: string): Promise<PublicOrganization | null> {
+  const org = await findPublicOrganization(rawDb, organizationSlug);
+  return org ? { name: org.name, slug: org.slug, timezone: org.timezone } : null;
+}
+
+export async function listPublicJobs(rawDb: Db, organizationSlug: string, now: Date): Promise<PublicJob[]> {
+  const db = publicApplyDb(rawDb); // public pages: only published, public jobs are readable
+  const org = await findPublicOrganization(rawDb, organizationSlug);
+  if (!org) return [];
   const rows = await db.jobOpening.findMany({
     where: {
       status: "PUBLISHED",
       visibility: "PUBLIC",
-      organization: { slug: organizationSlug, status: "ACTIVE" },
+      organizationId: org.id,
       OR: [{ applicationDeadline: null }, { applicationDeadline: { gt: now } }],
     },
     select,
@@ -120,10 +132,13 @@ export async function listPublicJobs(db: Db, organizationSlug: string, now: Date
   return rows.map((r) => toPublicJob(r, now));
 }
 
-export async function getPublicJob(db: Db, organizationSlug: string, jobSlug: string, now: Date): Promise<PublicJob | null> {
-  if (!SLUG.test(organizationSlug) || !SLUG.test(jobSlug)) return null;
+export async function getPublicJob(rawDb: Db, organizationSlug: string, jobSlug: string, now: Date): Promise<PublicJob | null> {
+  const db = publicApplyDb(rawDb); // public pages: only published, public jobs are readable
+  if (!SLUG.test(jobSlug)) return null;
+  const org = await findPublicOrganization(rawDb, organizationSlug);
+  if (!org) return null;
   const row = await db.jobOpening.findFirst({
-    where: { slug: jobSlug, status: "PUBLISHED", visibility: "PUBLIC", organization: { slug: organizationSlug, status: "ACTIVE" } },
+    where: { slug: jobSlug, status: "PUBLISHED", visibility: "PUBLIC", organizationId: org.id },
     select,
   });
   return row ? toPublicJob(row, now) : null;

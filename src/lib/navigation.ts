@@ -36,18 +36,18 @@ type NavItemDefinition = {
 
 export const NAV_ITEMS: readonly NavItemDefinition[] = [
   { key: "dashboard", label: "Dashboard", href: "/dashboard", section: "workspace", status: "available", requiresAny: "everyone" },
-  { key: "employees", label: "Employees", href: "/employees", section: "workspace", status: "planned", requiresAny: ["employee:read", "employee:read_team"] },
-  { key: "recruitment", label: "Recruitment", href: "/recruitment", section: "workspace", status: "available", requiresAny: ["job:read", "application:read", "application:read_assigned"] },
-  { key: "interviews", label: "Interviews", href: "/interviews", section: "workspace", status: "planned", requiresAny: ["interview:read", "interview:read_assigned"] },
-  { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "planned", requiresAny: ["attendance:read_own", "attendance:read_team", "attendance:read"] },
-  { key: "leave", label: "Leave Management", href: "/leave", section: "workspace", status: "planned", requiresAny: ["leave:apply", "leave:read_team", "leave:read"] },
+  { key: "employees", label: "Employees", href: "/employees", section: "workspace", status: "planned", requiresAny: ["employee:read"] },
+  { key: "recruitment", label: "Recruitment", href: "/recruitment", section: "workspace", status: "available", requiresAny: ["job:read", "application:read"] },
+  { key: "interviews", label: "Interviews", href: "/interviews", section: "workspace", status: "planned", requiresAny: ["interview:read"] },
+  { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "planned", requiresAny: ["self:attendance_read", "attendance:read"] },
+  { key: "leave", label: "Leave Management", href: "/leave", section: "workspace", status: "planned", requiresAny: ["self:leave_apply", "leave:read"] },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", section: "workspace", status: "planned", requiresAny: ["onboarding:read"] },
-  { key: "performance", label: "Performance", href: "/performance", section: "workspace", status: "planned", requiresAny: ["performance:read_own", "performance:read_team", "performance:read"] },
+  { key: "performance", label: "Performance", href: "/performance", section: "workspace", status: "planned", requiresAny: ["self:profile_read", "employee:read"] },
   { key: "forms", label: "Form Builder", href: "/forms", section: "workspace", status: "planned", requiresAny: ["form:read"] },
   { key: "reports", label: "Reports and Analytics", href: "/reports", section: "workspace", status: "planned", requiresAny: ["report:read"] },
   { key: "announcements", label: "Announcements", href: "/announcements", section: "workspace", status: "planned", requiresAny: "everyone" },
   { key: "settings", label: "Organisation Settings", href: "/settings", section: "administration", status: "planned", requiresAny: ["org:update"] },
-  { key: "users", label: "User and Role Management", href: "/users", section: "administration", status: "planned", requiresAny: ["member:read"] },
+  { key: "users", label: "User and Role Management", href: "/users", section: "administration", status: "available", requiresAny: ["user:read"] },
   { key: "integrations", label: "Integrations", href: "/integrations", section: "administration", status: "planned", requiresAny: ["integration:read"] },
 ];
 

@@ -57,7 +57,7 @@ async function CandidatesContent({ searchParams }: { searchParams: Promise<Query
     <div className="space-y-6">
       <PageHeader
         title="Candidates"
-        description={scope === "assigned" ? "People with an application assigned to you." : "Everyone who has applied to your organisation. One profile per person, however many jobs they apply for."}
+        description="Everyone who has applied to your organisation. One profile per person, however many jobs they apply for."
       />
 
       <form action="/recruitment/candidates" className="relative w-full sm:w-80" role="search">

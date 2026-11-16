@@ -21,7 +21,9 @@ export type AuditEntry = {
 export type AuditWriter = (db: Pick<Db, "auditLog">, entry: AuditEntry) => Promise<void>;
 
 export const writeAudit: AuditWriter = async (db, entry) => {
-  await db.auditLog.create({
+  // createMany writes without reading the row back. That matters under row-level security: anyone may
+  // add an audit record, but only a Super Admin may read the log, so a read-back would be refused.
+  await db.auditLog.createMany({
     data: {
       organizationId: entry.organizationId,
       actorUserId: entry.actorUserId,

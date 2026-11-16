@@ -6,9 +6,11 @@ import type { AuditEntry } from "@/lib/auth/audit";
 import type { AuthContext } from "@/lib/auth/context";
 import { ForbiddenError } from "@/lib/auth/errors";
 import { createDb, type Db } from "@/lib/db";
+import { realRoleIds } from "./roles-helper";
 import { RecruitmentError } from "@/lib/recruitment/errors";
 import { type JobInput, parseJobInput } from "@/lib/recruitment/job-input";
 import { changeJobStatus, countJobsByStatus, createJob, getJob, listJobs, updateJob } from "@/lib/recruitment/jobs";
+import { giveSession } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
@@ -38,13 +40,17 @@ describe.skipIf(!enabled)("job openings service (test database)", () => {
   const userIds: string[] = [];
   const orgIds: string[] = [];
 
-  beforeAll(() => {
+  let hrManagerRole: string;
+
+  beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 3 });
     db = createDb(runtimeUrl!, { max: 4 });
+    hrManagerRole = (await realRoleIds(owner)).HR_MANAGER;
   });
   afterAll(async () => {
     if (owner) {
       await owner.jobOpening.deleteMany({ where: { organizationId: { in: orgIds } } });
+      await owner.organizationMember.deleteMany({ where: { organizationId: { in: orgIds } } });
       await owner.department.deleteMany({ where: { organizationId: { in: orgIds } } });
       await owner.organization.deleteMany({ where: { id: { in: orgIds } } });
       await owner.user.deleteMany({ where: { id: { in: userIds } } });
@@ -60,16 +66,21 @@ describe.skipIf(!enabled)("job openings service (test database)", () => {
       data: { slug: `t-${rnd()}${rnd()}`, name: `Org ${rnd()}`, ownerUserId: user.id, timezone: "Asia/Kolkata", defaultCurrency: "INR" },
     });
     orgIds.push(org.id);
+    // A real, active HR Manager of the organisation: the database checks real membership (row-level security).
+    const member = await owner.organizationMember.create({
+      data: { organizationId: org.id, userId: user.id, status: "ACTIVE", joinedAt: now, roles: { create: [{ roleId: hrManagerRole }] } },
+    });
     const ctx: AuthContext = {
       sessionId: "00000000-0000-0000-0000-000000000000",
       user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
       organization: { id: org.id, name: org.name, slug: org.slug },
-      memberId: null,
+      memberId: member.id,
       expiresAt: now,
       absoluteExpiresAt: now,
       roleKeys: [],
       permissions: new Set(permissions),
     };
+    await giveSession(owner, ctx); // the database trusts a live session, not a context made up here
     const entries: AuditEntry[] = [];
     const deps = {
       db,
@@ -121,7 +132,7 @@ describe.skipIf(!enabled)("job openings service (test database)", () => {
     await expect(listJobs(db, none.ctx)).rejects.toBeInstanceOf(ForbiddenError);
     const full = await world();
     const job = await createJob(full.deps, full.ctx, input());
-    const noClose = { ...full.ctx, permissions: new Set(["job:read", "job:publish"]) };
+    const noClose = await giveSession(owner, { ...full.ctx, permissions: new Set(["job:read", "job:publish"]) });
     await changeJobStatus(full.deps, noClose, job.id, "publish");
     await expect(changeJobStatus(full.deps, noClose, job.id, "close")).rejects.toBeInstanceOf(ForbiddenError);
   });

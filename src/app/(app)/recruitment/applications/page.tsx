@@ -86,7 +86,7 @@ async function ApplicationsContent({ searchParams }: { searchParams: Promise<Que
     <div className="space-y-6">
       <PageHeader
         title="Applications"
-        description={scope === "assigned" ? "The applications assigned to you." : "Everyone who has applied, across all jobs."}
+        description="Everyone who has applied, across all jobs."
         actions={
           canCreate && (
             <Button asChild>
@@ -130,7 +130,7 @@ async function ApplicationsContent({ searchParams }: { searchParams: Promise<Que
           </div>
           {scope === "all" && (
             <div className="space-y-1">
-              <Label htmlFor="f-recruiter">Recruiter</Label>
+              <Label htmlFor="f-recruiter">Responsible</Label>
               <Select id="f-recruiter" name="recruiter" defaultValue={filters.recruiter}>
                 <option value="">Anyone</option>
                 <option value="unassigned">Unassigned</option>
@@ -180,13 +180,9 @@ async function ApplicationsContent({ searchParams }: { searchParams: Promise<Que
         {result.items.length === 0 ? (
           <EmptyState
             icon={Inbox}
-            title={filtered ? "No applications match these filters" : scope === "assigned" ? "Nothing is assigned to you yet" : "No applications yet"}
+            title={filtered ? "No applications match these filters" : "No applications yet"}
             description={
-              filtered
-                ? "Try removing a filter or searching for something else."
-                : scope === "assigned"
-                  ? "Applications appear here when an HR manager assigns them to you."
-                  : "Applications appear here when candidates apply to a published job, or when you add one by hand."
+              filtered ? "Try removing a filter or searching for something else." : "Applications appear here when candidates apply to a published job, or when you add one by hand."
             }
           />
         ) : (
@@ -197,7 +193,7 @@ async function ApplicationsContent({ searchParams }: { searchParams: Promise<Que
                   <th scope="col" className="px-5 py-2.5 font-medium">Candidate</th>
                   <th scope="col" className="px-3 py-2.5 font-medium">Job</th>
                   <th scope="col" className="px-3 py-2.5 font-medium">Status</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Recruiter</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Responsible</th>
                   <th scope="col" className="px-3 py-2.5 font-medium">Applied</th>
                   <th scope="col" className="px-5 py-2.5 font-medium">Reference</th>
                 </tr>

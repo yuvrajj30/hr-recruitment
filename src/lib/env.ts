@@ -19,6 +19,10 @@ const schema = z
     // Only migrations and seeding use the owner account (hr_app). The running app never needs it.
     MIGRATION_DATABASE_URL: postgresUrl.optional(),
     DB_OWNER_ROLE: z.string().min(1).default("hr_app"),
+    // "UTC" makes every database connection use UTC, which timestamps need to be stored and read
+    // correctly (see src/lib/db.ts). Unset = the database server's own time zone (legacy behaviour),
+    // kept for an existing database until its historical timestamps have been corrected.
+    DB_SESSION_TIME_ZONE: z.enum(["UTC"]).optional(),
 
     // Secret used to scramble login identifiers before they are stored (HMAC).
     AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),

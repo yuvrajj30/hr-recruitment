@@ -8,7 +8,7 @@ import { Label, Select, Textarea } from "@/components/ui/input";
 import { EMPTY_FORM_STATE } from "@/lib/recruitment/form-state";
 import { allowedMoves, type AnyStage, MAX_REASON_LENGTH, moveNeedsReason, type PipelineStage, STAGE_LABELS } from "@/lib/recruitment/stages";
 
-// The controls on an application: move its stage, assign a recruiter, add a note.
+// The controls on an application: move its stage, choose the responsible HR person, add a note.
 // Each is an ordinary form posting to a Server Action; the server decides whether it is allowed.
 
 const REASON_LABEL = { reject: "Reason for rejecting", backward: "Why is it moving back?", restore: "Why is it being reopened?", forward: "Comment", withdraw: "Comment" } as const;
@@ -70,7 +70,7 @@ export function RecruiterPicker({ applicationId, currentId, recruiters }: { appl
       <div className="flex gap-2">
         <Select id={id} name="recruiterId" value={value} onChange={(e) => setValue(e.target.value)}>
           <option value="">Nobody (unassigned)</option>
-          {!known && currentId && <option value={currentId}>Current recruiter</option>}
+          {!known && currentId && <option value={currentId}>Current responsible person</option>}
           {recruiters.map((r) => (
             <option key={r.id} value={r.id}>
               {r.name}
@@ -81,7 +81,7 @@ export function RecruiterPicker({ applicationId, currentId, recruiters }: { appl
           Save
         </Button>
       </div>
-      {recruiters.length === 0 && <p className="text-xs text-fg-muted">Nobody in this organisation has a role that can work applications yet.</p>}
+      {recruiters.length === 0 && <p className="text-xs text-fg-muted">Nobody in this organisation is an active HR Manager or Super Admin yet.</p>}
       {state.message && <Alert tone="danger">{state.message}</Alert>}
     </form>
   );

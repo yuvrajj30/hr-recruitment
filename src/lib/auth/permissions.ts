@@ -1,6 +1,6 @@
 import "server-only";
 import type { Db } from "@/lib/db";
-import type { AssignableResource, PermissionKey } from "./permission-keys";
+import type { PermissionKey } from "./permission-keys";
 
 // What a person may do inside one organization.
 //   person -> membership (one per organization) -> roles -> permissions
@@ -42,15 +42,12 @@ export const hasPermission = (permissions: ReadonlySet<string>, key: PermissionK
 export const hasAnyPermission = (permissions: ReadonlySet<string>, keys: readonly PermissionKey[]): boolean =>
   keys.some((k) => permissions.has(k));
 
-// How much of a resource a person may read:
-//   "all"      - everything in the organization   (x:read)
-//   "assigned" - only what is assigned to them    (x:read_assigned), e.g. an interviewer
-//   "none"     - nothing
-// The list query must apply the matching filter. "assigned" is not a hint, it is a restriction.
-export type ReadScope = "all" | "assigned" | "none";
+// Whether a person may read a recruitment resource at all. With the three fixed roles there is no
+// "only what is assigned to me" level any more: Super Admins and HR Managers read everything in their
+// organisation, Employees read nothing. Kept as a function so pages and services ask one question.
+export type ReadableResource = "candidate" | "application" | "interview";
+export type ReadScope = "all" | "none";
 
-export function readScope(permissions: ReadonlySet<string>, resource: AssignableResource): ReadScope {
-  if (permissions.has(`${resource}:read`)) return "all";
-  if (permissions.has(`${resource}:read_assigned`)) return "assigned";
-  return "none";
+export function readScope(permissions: ReadonlySet<string>, resource: ReadableResource): ReadScope {
+  return permissions.has(`${resource}:read`) ? "all" : "none";
 }

@@ -7,9 +7,14 @@ import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/compon
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isRoleKey, ROLE_LABELS } from "@/lib/auth/roles";
 import { getCurrentAuth } from "@/lib/auth/server-session";
+import { EmployeeHome } from "@/components/dashboard/employee-home";
 
 export const metadata: Metadata = { title: "Dashboard · HRMS" };
+
+// Any of these means the person works on HR or administration, not only on themselves.
+const HR_AREAS = ["job:read", "application:read", "user:read", "employee:read", "attendance:read", "leave:read", "report:read"] as const;
 
 export default function DashboardPage() {
   return (
@@ -25,6 +30,14 @@ async function DashboardContent() {
   const auth = await getCurrentAuth();
   if (!auth) redirect("/login?next=%2Fdashboard&reason=expired");
   const firstName = auth.user.name.trim().split(/\s+/)[0] || auth.user.name;
+
+  // Someone without any HR or administrative permission (an Employee) gets the self-service home.
+  // Deciding by permissions, not by role name, keeps this right if a role's permissions ever change.
+  const isStaffAdmin = HR_AREAS.some((p) => auth.permissions.has(p));
+  if (!isStaffAdmin) {
+    const role = auth.roleKeys.find(isRoleKey);
+    return <EmployeeHome firstName={firstName} organizationName={auth.organization?.name ?? ""} roleLabel={role ? ROLE_LABELS[role] : "Employee"} />;
+  }
 
   return (
     <div className="space-y-6">
@@ -99,15 +112,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-// Display names for the built-in roles; any other role key is shown in a readable form.
-const BUILT_IN_ROLE_NAMES: Record<string, string> = {
-  ADMIN: "Admin",
-  HR_MANAGER: "HR Manager",
-  RECRUITER: "Recruiter",
-  INTERVIEWER: "Interviewer",
-};
-const roleLabel = (key: string) =>
-  BUILT_IN_ROLE_NAMES[key] ?? key.toLowerCase().split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+// Display names come from the one role definition (src/lib/auth/roles.ts).
+const roleLabel = (key: string) => (isRoleKey(key) ? ROLE_LABELS[key] : key);
 
 function DashboardSkeleton() {
   return (

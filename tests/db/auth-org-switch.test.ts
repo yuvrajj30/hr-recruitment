@@ -8,6 +8,8 @@ import { getAuthContext } from "@/lib/auth/context";
 import { switchActiveOrganization } from "@/lib/auth/org-switch";
 import { createSession, revokeSessionByToken } from "@/lib/auth/session-store";
 import { createDb, type Db } from "@/lib/db";
+import { ROLE_PERMISSIONS, type RoleKey } from "@/lib/auth/roles";
+import { realRoleIds } from "./roles-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
@@ -24,12 +26,12 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
   let db: Db;
   const userIds: string[] = [];
   const orgIds: string[] = [];
-  const roleIds: string[] = [];
-  const permissionIds: string[] = [];
+  let role: Record<RoleKey, string>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 3 });
     db = createDb(runtimeUrl!, { max: 4 });
+    role = await realRoleIds(owner);
   });
   afterAll(async () => {
     if (owner) {
@@ -37,8 +39,6 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
       await owner.organizationMember.deleteMany({ where: { userId: { in: userIds } } });
       await owner.organization.deleteMany({ where: { id: { in: orgIds } } });
       await owner.user.deleteMany({ where: { id: { in: userIds } } });
-      await owner.role.deleteMany({ where: { id: { in: roleIds } } });
-      await owner.permission.deleteMany({ where: { id: { in: permissionIds } } });
       await owner.$disconnect();
     }
     await db?.$disconnect();
@@ -49,14 +49,6 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
     return { entries, deps: { writeAudit: async (_db: unknown, e: AuditEntry) => void entries.push(e) } };
   };
 
-  async function makeRole(permissionKey: string) {
-    const role = await owner.role.create({ data: { key: `T_SW_${rnd()}`, name: "Switch Test", isSystem: false } });
-    roleIds.push(role.id);
-    const perm = await owner.permission.upsert({ where: { key: permissionKey }, update: {}, create: { key: permissionKey, module: "test" } });
-    permissionIds.push(perm.id);
-    await owner.rolePermission.create({ data: { roleId: role.id, permissionId: perm.id } });
-    return role;
-  }
   async function makeUser() {
     const u = await owner.user.create({ data: { email: `switch-test-${rnd()}@example.test`, name: "Switch Test" } });
     userIds.push(u.id);
@@ -72,7 +64,7 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
       data: { organizationId, userId, status, joinedAt: t0, ...(roleId ? { roles: { create: [{ roleId }] } } : {}) },
     });
   const signIn = (userId: string, organizationId: string | null) =>
-    createSession(db, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
+    createSession(owner, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
   const sessionOrg = async (sessionId: string) =>
     (await owner.session.findUniqueOrThrow({ where: { id: sessionId } })).activeOrganizationId;
   const input = (sessionId: string, userId: string, organizationId: string) => ({
@@ -81,11 +73,9 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
 
   // One person working in two companies, plus other companies they have no (usable) access to.
   async function world() {
-    const tag = rnd();
-    const permA = `tsw${tag}:only_in_a`;
-    const permB = `tsw${tag}:only_in_b`;
-    const roleA = await makeRole(permA);
-    const roleB = await makeRole(permB);
+    // Super Admin in A, Employee in B: very different permissions, so any leak between them shows.
+    const permA = [...ROLE_PERMISSIONS.SUPER_ADMIN].sort();
+    const permB = [...ROLE_PERMISSIONS.EMPLOYEE].sort();
     const me = await makeUser();
     const stranger = await makeUser();
     const orgA = await makeOrg(me.id);
@@ -94,8 +84,8 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
     const suspendedOrg = await makeOrg(stranger.id, "SUSPENDED");
     const invitedOrg = await makeOrg(stranger.id);
     const suspendedMemberOrg = await makeOrg(stranger.id);
-    await makeMember(orgA.id, me.id, "ACTIVE", roleA.id);
-    await makeMember(orgB.id, me.id, "ACTIVE", roleB.id);
+    await makeMember(orgA.id, me.id, "ACTIVE", role.SUPER_ADMIN);
+    await makeMember(orgB.id, me.id, "ACTIVE", role.EMPLOYEE);
     await makeMember(foreign.id, stranger.id, "ACTIVE");
     await makeMember(suspendedOrg.id, me.id, "ACTIVE");
     await makeMember(invitedOrg.id, me.id, "INVITED");
@@ -124,13 +114,13 @@ describe.skipIf(!enabled)("switching organization (test database)", () => {
     const w = await world();
     const ctxNow = () => getAuthContext(db, w.session.token, { now: new Date(t0.getTime() + 60_000), timings, touch: false });
     const before = await ctxNow();
-    expect(before.ok && [...before.ctx.permissions]).toEqual([w.permA]);
+    expect(before.ok && [...before.ctx.permissions].sort()).toEqual(w.permA);
     await switchActiveOrganization(db, input(w.session.sessionId, w.me.id, w.orgB.id), recorder().deps);
     const after = await ctxNow();
     expect(after.ok).toBe(true);
     if (!after.ok) return;
     expect(after.ctx.organization?.id).toBe(w.orgB.id);
-    expect([...after.ctx.permissions]).toEqual([w.permB]); // nothing carried over from organization A
+    expect([...after.ctx.permissions].sort()).toEqual(w.permB); // nothing carried over from organization A
   });
   it("switching to the organization already active does nothing and writes no audit record", async () => {
     const w = await world();

@@ -141,7 +141,7 @@ async function JobContent({ params, searchParams }: { params: Promise<{ jobId: s
             <CardHeader>
               <div>
                 <CardTitle>Applications</CardTitle>
-                <CardDescription>{canSeeApplications ? `${visibleCount} application${visibleCount === 1 ? "" : "s"}${applicationScope === "assigned" ? " assigned to you" : ""}.` : "Your role does not include viewing applications."}</CardDescription>
+                <CardDescription>{canSeeApplications ? `${visibleCount} application${visibleCount === 1 ? "" : "s"}.` : "Your role does not include viewing applications."}</CardDescription>
               </div>
               {canSeeApplications && (
                 <div className="flex shrink-0 flex-wrap justify-end gap-2">

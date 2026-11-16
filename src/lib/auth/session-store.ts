@@ -37,6 +37,10 @@ export type CreatedSession = {
   absoluteExpiresAt: Date;
 };
 
+// NOT used by the running application: its database account cannot insert sessions. A session is created
+// only by the database itself, after it has checked the password (app_sign_in) or the invitation
+// (app_accept_invitation): see the security_hardening migration. This function remains for the owner
+// connection: the seed, maintenance scripts and test fixtures.
 export async function createSession(
   db: Pick<Db, "session">,
   input: {

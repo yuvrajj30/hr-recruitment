@@ -3,6 +3,7 @@ import type { AuditWriter } from "@/lib/auth/audit";
 import { type AuthContext, requireAnyPermission, requireOrganizationId, requirePermission } from "@/lib/auth/context";
 import type { Prisma } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
+import { staffDb } from "@/lib/db-context";
 import { conflict, invalid, notFound } from "./errors";
 import { dateInTimeZone, endOfDayInTimeZone, type JobInput, pickFreeSlug, slugify } from "./job-input";
 import { canTransition, isEditable, JOB_TRANSITIONS, type JobAction, type JobStatus } from "./job-status";
@@ -93,7 +94,8 @@ const toListItem = (row: ListRow): JobListItem => ({
 
 const MAX_LIST = 200;
 
-export async function listJobs(db: Db, ctx: AuthContext, filters: JobFilters = {}): Promise<JobListItem[]> {
+export async function listJobs(rawDb: Db, ctx: AuthContext, filters: JobFilters = {}): Promise<JobListItem[]> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   requirePermission(ctx, "job:read");
   const organizationId = requireOrganizationId(ctx);
   const search = filters.search?.trim().slice(0, 100);
@@ -116,7 +118,8 @@ export async function listJobs(db: Db, ctx: AuthContext, filters: JobFilters = {
 }
 
 // How many jobs are in each status (for the filter tabs).
-export async function countJobsByStatus(db: Db, ctx: AuthContext): Promise<Record<JobStatus, number>> {
+export async function countJobsByStatus(rawDb: Db, ctx: AuthContext): Promise<Record<JobStatus, number>> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   requirePermission(ctx, "job:read");
   const organizationId = requireOrganizationId(ctx);
   const groups = await db.jobOpening.groupBy({ by: ["status"], where: { organizationId }, _count: { _all: true } });
@@ -125,7 +128,8 @@ export async function countJobsByStatus(db: Db, ctx: AuthContext): Promise<Recor
   return counts;
 }
 
-export async function getJob(db: Db, ctx: AuthContext, jobId: string): Promise<JobDetail> {
+export async function getJob(rawDb: Db, ctx: AuthContext, jobId: string): Promise<JobDetail> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   requirePermission(ctx, "job:read");
   const organizationId = requireOrganizationId(ctx);
   if (!isUuid(jobId)) throw notFound("That job opening");
@@ -174,7 +178,8 @@ export async function getJob(db: Db, ctx: AuthContext, jobId: string): Promise<J
 }
 
 // Departments to choose from in the job form.
-export async function listJobDepartments(db: Db, ctx: AuthContext): Promise<{ id: string; name: string }[]> {
+export async function listJobDepartments(rawDb: Db, ctx: AuthContext): Promise<{ id: string; name: string }[]> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   requireAnyPermission(ctx, ["job:create", "job:update", "department:read"]);
   const organizationId = requireOrganizationId(ctx);
   return db.department.findMany({
@@ -185,7 +190,8 @@ export async function listJobDepartments(db: Db, ctx: AuthContext): Promise<{ id
 }
 
 // The organisation's time zone and currency, which the job form needs.
-export async function getOrganizationSettings(db: Db, ctx: AuthContext): Promise<{ timezone: string; currency: string }> {
+export async function getOrganizationSettings(rawDb: Db, ctx: AuthContext): Promise<{ timezone: string; currency: string }> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   const organizationId = requireOrganizationId(ctx);
   const org = await db.organization.findUnique({ where: { id: organizationId }, select: { timezone: true, defaultCurrency: true } });
   if (!org) throw notFound("The organisation");
@@ -199,7 +205,7 @@ export async function getOrganizationSettings(db: Db, ctx: AuthContext): Promise
 export async function createJob(deps: JobDeps, ctx: AuthContext, input: JobInput): Promise<{ id: string }> {
   requirePermission(ctx, "job:create");
   const organizationId = requireOrganizationId(ctx);
-  const { db } = deps;
+  const db = staffDb(deps.db, ctx); // the database checks who is asking (row-level security)
   const settings = await getOrganizationSettings(db, ctx);
   await assertDepartment(db, organizationId, input.departmentId);
   const deadline = input.applicationDeadline ? endOfDayInTimeZone(input.applicationDeadline, settings.timezone) : null;
@@ -249,7 +255,7 @@ export async function createJob(deps: JobDeps, ctx: AuthContext, input: JobInput
 export async function updateJob(deps: JobDeps, ctx: AuthContext, jobId: string, input: JobInput): Promise<void> {
   requirePermission(ctx, "job:update");
   const organizationId = requireOrganizationId(ctx);
-  const { db } = deps;
+  const db = staffDb(deps.db, ctx); // the database checks who is asking (row-level security)
   if (!isUuid(jobId)) throw notFound("That job opening");
   const existing = await db.jobOpening.findFirst({ where: { id: jobId, organizationId }, select: { status: true } });
   if (!existing) throw notFound("That job opening");
@@ -286,7 +292,7 @@ export async function changeJobStatus(deps: JobDeps, ctx: AuthContext, jobId: st
   const transition = JOB_TRANSITIONS[action];
   requirePermission(ctx, transition.permission);
   const organizationId = requireOrganizationId(ctx);
-  const { db } = deps;
+  const db = staffDb(deps.db, ctx); // the database checks who is asking (row-level security)
   if (!isUuid(jobId)) throw notFound("That job opening");
   const job = await db.jobOpening.findFirst({
     where: { id: jobId, organizationId },

@@ -281,15 +281,17 @@ enum IntegrationStatus {
 // ----------------------------------------------------------------------------
 
 model Organization {
-  id              String             @id @default(uuid(7)) @db.Uuid
-  slug            String             @unique // public careers URL: /careers/<slug>
-  name            String
-  status          OrganizationStatus @default(ACTIVE)
-  ownerUserId     String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
-  timezone        String             @default("UTC")
-  defaultCurrency String             @default("INR") @map("default_currency")
-  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                   String             @id @default(uuid(7)) @db.Uuid
+  slug                 String             @unique // public careers URL: /careers/<slug>
+  name                 String
+  status               OrganizationStatus @default(ACTIVE)
+  ownerUserId          String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
+  timezone             String             @default("UTC")
+  defaultCurrency      String             @default("INR") @map("default_currency")
+  // Super Admin's switch: may HR Managers invite Employee accounts? (on by default)
+  hrCanInviteEmployees Boolean            @default(true) @map("hr_can_invite_employees")
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   owner                  User                    @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   members                OrganizationMember[]
@@ -303,6 +305,7 @@ model Organization {
   auditLogs              AuditLog[]
   integrationConnections IntegrationConnection[]
   apiClients             ApiClient[]
+  staffInvitations       StaffInvitation[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -341,6 +344,9 @@ model User {
   notifications          Notification[]
   auditLogs              AuditLog[]
   apiClientsCreated      ApiClient[]
+  invitationsSent        StaffInvitation[]          @relation("InvitationInvitedBy")
+  invitationsAccepted    StaffInvitation[]          @relation("InvitationAcceptedUser")
+  invitationsRevoked     StaffInvitation[]          @relation("InvitationRevokedBy")
 
   @@map("users")
 }
@@ -370,7 +376,7 @@ model OrganizationMember {
 
 model Role {
   id          String   @id @default(uuid(7)) @db.Uuid
-  key         String   @unique // ADMIN, HR_MANAGER, RECRUITER, INTERVIEWER
+  key         String   @unique // exactly three: SUPER_ADMIN, HR_MANAGER, EMPLOYEE (a database check refuses any other)
   name        String
   description String?
   isSystem    Boolean  @default(true) @map("is_system")
@@ -416,6 +422,7 @@ model OrganizationMemberRole {
   role   Role               @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   @@id([memberId, roleId])
+  @@unique([memberId]) // exactly one role per member
   @@index([roleId])
   @@map("organization_member_roles")
 }
@@ -764,29 +771,29 @@ model CandidateLoginToken {
 // ----------------------------------------------------------------------------
 
 model Application {
-  id                      String           @id @default(uuid(7)) @db.Uuid
-  organizationId          String           @map("organization_id") @db.Uuid
-  referenceNumber         String           @unique @map("reference_number") // shown to the candidate
-  organizationCandidateId String           @map("organization_candidate_id") @db.Uuid
-  jobId                   String           @map("job_id") @db.Uuid
-  stage                   ApplicationStage @default(APPLIED)
-  stageChangedAt          DateTime         @default(now()) @map("stage_changed_at") @db.Timestamptz(6)
-  rejectionReason         String?          @map("rejection_reason")
-  source                  String? // where the candidate heard about the job
+  id                         String           @id @default(uuid(7)) @db.Uuid
+  organizationId             String           @map("organization_id") @db.Uuid
+  referenceNumber            String           @unique @map("reference_number") // shown to the candidate
+  organizationCandidateId    String           @map("organization_candidate_id") @db.Uuid
+  jobId                      String           @map("job_id") @db.Uuid
+  stage                      ApplicationStage @default(APPLIED)
+  stageChangedAt             DateTime         @default(now()) @map("stage_changed_at") @db.Timestamptz(6)
+  rejectionReason            String?          @map("rejection_reason")
+  source                     String? // where the candidate heard about the job
   // Whether the applicant was internal or external when they applied
-  candidateTypeAtApplication CandidateType @default(EXTERNAL) @map("candidate_type_at_application")
+  candidateTypeAtApplication CandidateType    @default(EXTERNAL) @map("candidate_type_at_application")
   // Copy of the candidate's profile at the moment of applying
-  profileSnapshot         Json?            @map("profile_snapshot")
-  assignedRecruiterId     String?          @map("assigned_recruiter_id") @db.Uuid
+  profileSnapshot            Json?            @map("profile_snapshot")
+  assignedRecruiterId        String?          @map("assigned_recruiter_id") @db.Uuid
   // The staff member who entered this application by hand. Empty = the candidate applied themselves.
-  createdById             String?          @map("created_by_id") @db.Uuid
+  createdById                String?          @map("created_by_id") @db.Uuid
   // Hash of the private link/token the candidate uses to view this application's status
-  statusTokenHash         String?          @unique @map("status_token_hash")
-  consentAcceptedAt       DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
-  privacyNoticeVersion    String?          @map("privacy_notice_version")
-  appliedAt               DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
-  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  statusTokenHash            String?          @unique @map("status_token_hash")
+  consentAcceptedAt          DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
+  privacyNoticeVersion       String?          @map("privacy_notice_version")
+  appliedAt                  DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
+  createdAt                  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   job                   JobOpening            @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Restrict)
   organizationCandidate OrganizationCandidate @relation(fields: [organizationId, organizationCandidateId], references: [organizationId, id], onDelete: Restrict)
@@ -869,6 +876,55 @@ model ApplicationAssignment {
   @@index([organizationId, applicationId, createdAt], map: "application_assignments_org_app_created_idx")
   @@index([recruiterId])
   @@map("application_assignments")
+}
+
+// One-time invitation to join an organisation as an HR Manager or Employee. Only a hash of the link's
+// token is stored. Expiry, single use, the allowed roles and "one open invitation per person" are also
+// enforced by database rules (see the three_roles migration).
+model StaffInvitation {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  email          String // stored lower-case
+  name           String
+  roleKey        String    @map("role_key") // HR_MANAGER or EMPLOYEE
+  tokenHash      String    @unique @map("token_hash")
+  invitedById    String?   @map("invited_by_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+  acceptedUserId String?   @map("accepted_user_id") @db.Uuid
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedById    String?   @map("revoked_by_id") @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitedBy    User?        @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedUser User?        @relation("InvitationAcceptedUser", fields: [acceptedUserId], references: [id], onDelete: SetNull)
+  revokedBy    User?        @relation("InvitationRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@map("staff_invitations")
+}
+
+// The one-time timestamp correction (see prisma/proposals/timestamp-correction.sql and
+// migration 20261116000000_timestamp_correction_objects). Both tables are append-only records.
+// audit_logs_display (a view, not modelled here) shows audit times with these corrections applied.
+model TimestampCorrection {
+  id          Int                     @id @default(autoincrement())
+  appliedAt   DateTime                @default(now()) @map("applied_at") @db.Timestamptz(6)
+  shift       Unsupported("interval")
+  description String
+
+  @@map("timestamp_corrections")
+}
+
+// Audit log rows are never modified; when a stored time had to be corrected, the correction is recorded here.
+model AuditLogTimeCorrection {
+  auditLogId String                  @id @map("audit_log_id") @db.Uuid
+  shift      Unsupported("interval")
+
+  auditLog AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Restrict)
+
+  @@map("audit_log_time_corrections")
 }
 
 // ----------------------------------------------------------------------------
@@ -983,8 +1039,8 @@ model FormAnswer {
   value          Json?
   documentId     String?   @map("document_id") @db.Uuid // for file-upload answers
 
-  submission FormSubmission    @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
-  field      FormField?        @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+  submission FormSubmission     @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
+  field      FormField?         @relation(fields: [fieldId], references: [id], onDelete: SetNull)
   document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, submissionId])
@@ -1248,6 +1304,8 @@ model AuditLog {
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  timeCorrection AuditLogTimeCorrection? // set only for rows corrected by the one-time timestamp correction
 
   @@index([organizationId, createdAt])
   @@index([entityType, entityId])

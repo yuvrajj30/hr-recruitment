@@ -4,6 +4,7 @@ import { ForbiddenError } from "@/lib/auth/errors";
 import { readScope } from "@/lib/auth/permissions";
 import type { Prisma } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
+import { staffDb } from "@/lib/db-context";
 import { phoneMatchKey, type ProfileSnapshot, readSnapshot } from "./application-input";
 import { type AppDeps, applicationScope, isUuid } from "./applications";
 import { invalid, notFound } from "./errors";
@@ -17,14 +18,12 @@ import type { AnyStage } from "./stages";
 //   - the details submitted with those applications (their snapshots).
 // Details the same person may have given to a different organisation are never shown here.
 
-// candidate:read -> every candidate of the organisation.
-// candidate:read_assigned -> only candidates with at least one application this person may see.
+// Reading candidates is all-or-nothing with the three fixed roles: candidate:read (Super Admin,
+// HR Manager) sees every candidate of their own organisation; Employees see none.
 function candidateScope(ctx: AuthContext): Prisma.OrganizationCandidateWhereInput {
   const organizationId = requireOrganizationId(ctx);
-  const scope = readScope(ctx.permissions, "candidate");
-  if (scope === "none") throw new ForbiddenError("missing permission candidate:read");
-  if (scope === "all") return { organizationId };
-  return { organizationId, applications: { some: applicationScope(ctx) } };
+  if (readScope(ctx.permissions, "candidate") === "none") throw new ForbiddenError("missing permission candidate:read");
+  return { organizationId };
 }
 
 // Which of a candidate's applications the reader may see.
@@ -45,10 +44,11 @@ export type CandidateListItem = {
 export const CANDIDATES_PAGE_SIZE = 25;
 
 export async function listCandidates(
-  db: Db,
+  rawDb: Db,
   ctx: AuthContext,
   filters: { search?: string; page?: number },
 ): Promise<{ items: CandidateListItem[]; total: number; page: number; pages: number }> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   const search = filters.search?.trim().slice(0, 100);
   const digits = search?.replace(/\D/g, "") ?? "";
   const where: Prisma.OrganizationCandidateWhereInput = {
@@ -124,7 +124,8 @@ export type CandidateDetail = {
   possibleDuplicates: { id: string; name: string; email: string }[];
 };
 
-export async function getCandidate(db: Db, ctx: AuthContext, organizationCandidateId: string): Promise<CandidateDetail> {
+export async function getCandidate(rawDb: Db, ctx: AuthContext, organizationCandidateId: string): Promise<CandidateDetail> {
+  const db = staffDb(rawDb, ctx); // the database checks who is asking (row-level security)
   const scope = candidateScope(ctx);
   if (!isUuid(organizationCandidateId)) throw notFound("That candidate");
   const row = await db.organizationCandidate.findFirst({
@@ -218,15 +219,16 @@ export const MAX_CANDIDATE_NOTES = 8000;
 
 // The organisation's own running notes about a person (separate from notes on one application).
 export async function updateCandidateNotes(deps: AppDeps, ctx: AuthContext, organizationCandidateId: string, rawNotes: string): Promise<void> {
+  const db = staffDb(deps.db, ctx); // the database checks who is asking (row-level security)
   requirePermission(ctx, "candidate:update");
   const scope = candidateScope(ctx);
   const organizationId = requireOrganizationId(ctx);
   if (!isUuid(organizationCandidateId)) throw notFound("That candidate");
   const notes = rawNotes.trim();
   if (notes.length > MAX_CANDIDATE_NOTES) throw invalid(`Keep the notes under ${MAX_CANDIDATE_NOTES} characters.`);
-  const exists = await deps.db.organizationCandidate.findFirst({ where: { AND: [scope, { id: organizationCandidateId }] }, select: { id: true } });
+  const exists = await db.organizationCandidate.findFirst({ where: { AND: [scope, { id: organizationCandidateId }] }, select: { id: true } });
   if (!exists) throw notFound("That candidate");
-  await deps.db.$transaction(async (tx) => {
+  await db.$transaction(async (tx) => {
     await tx.organizationCandidate.updateMany({ where: { id: organizationCandidateId, organizationId }, data: { notes: notes || null } });
     await deps.writeAudit(tx, {
       organizationId,

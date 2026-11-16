@@ -6,6 +6,8 @@ import type { AuditEntry } from "@/lib/auth/audit";
 import type { AuthContext } from "@/lib/auth/context";
 import { ForbiddenError } from "@/lib/auth/errors";
 import { createDb, type Db } from "@/lib/db";
+import { ROLE_PERMISSIONS, type RoleKey } from "@/lib/auth/roles";
+import { realRoleIds } from "./roles-helper";
 import { type ApplicationInput, parseApplicationInput } from "@/lib/recruitment/application-input";
 import {
   addApplicationNote,
@@ -24,6 +26,7 @@ import { getCandidate, listCandidates, updateCandidateNotes } from "@/lib/recrui
 import { readDocument } from "@/lib/recruitment/documents";
 import { getPublicJob, listPublicJobs } from "@/lib/recruitment/public-jobs";
 import type { FileStorage } from "@/lib/recruitment/storage";
+import { giveSession, purgeTestAuditRows } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
@@ -35,8 +38,9 @@ const rnd = () => randomBytes(4).toString("hex");
 const TZ = "Asia/Kolkata";
 const EMAIL_DOMAIN = "apps-test.example.test";
 
-const HR = ["job:read", "application:read", "application:create", "application:move_stage", "application:assign", "application:note", "candidate:read", "candidate:update", "document:read"];
-const RECRUITER = ["job:read", "application:read_assigned", "application:move_stage", "application:note", "candidate:read_assigned", "document:read"];
+// Exactly the permissions of the real roles (src/lib/auth/roles.ts).
+const HR = [...ROLE_PERMISSIONS.HR_MANAGER];
+const EMPLOYEE = [...ROLE_PERMISSIONS.EMPLOYEE];
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a]);
 const resume = (): ResumeUpload => ({ bytes: PDF, kind: { extension: "pdf", mimeType: "application/pdf" }, safeName: "cv.pdf" });
@@ -62,11 +66,12 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   let db: Db;
   const userIds: string[] = [];
   const orgIds: string[] = [];
-  const roleIds: string[] = [];
+  let role: Record<RoleKey, string>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 3 });
     db = createDb(runtimeUrl!, { max: 5 });
+    role = await realRoleIds(owner);
   });
   afterAll(async () => {
     if (owner) {
@@ -76,10 +81,9 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
       await owner.candidateProfile.deleteMany({ where: { email: { endsWith: `@${EMAIL_DOMAIN}` } } });
       await owner.jobOpening.deleteMany({ where: { organizationId: { in: orgIds } } });
       await owner.organizationMember.deleteMany({ where: { organizationId: { in: orgIds } } });
+      await purgeTestAuditRows(owner, orgIds); // a public application is audited by the database itself
       await owner.organization.deleteMany({ where: { id: { in: orgIds } } });
       await owner.user.deleteMany({ where: { id: { in: userIds } } });
-      await owner.rolePermission.deleteMany({ where: { roleId: { in: roleIds } } });
-      await owner.role.deleteMany({ where: { id: { in: roleIds } } });
       await owner.$disconnect();
     }
     await db?.$disconnect();
@@ -111,19 +115,18 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     permissions: new Set(permissions),
   });
 
-  // One organisation with an HR manager, two recruiters (real members with a role) and a published public job.
+  // One organisation with an HR user, two HR Managers and an Employee (real members with real roles),
+  // and a published public job.
   async function world() {
     const hr = await makeUser("Hema HR");
-    const rec1 = await makeUser("Ravi Recruiter");
-    const rec2 = await makeUser("Rita Recruiter");
+    const rec1 = await makeUser("Ravi Manager");
+    const rec2 = await makeUser("Rita Manager");
+    const emp = await makeUser("Eli Employee");
     const org = await owner.organization.create({ data: { slug: `t-${rnd()}${rnd()}`, name: `Org ${rnd()}`, ownerUserId: hr.id, timezone: TZ } });
     orgIds.push(org.id);
-    const role = await owner.role.create({ data: { key: `T_APP_${rnd()}`, name: "Pipeline Test", isSystem: false } });
-    roleIds.push(role.id);
-    const perm = await owner.permission.upsert({ where: { key: "application:move_stage" }, update: {}, create: { key: "application:move_stage", module: "application" } });
-    await owner.rolePermission.create({ data: { roleId: role.id, permissionId: perm.id } });
-    for (const u of [rec1, rec2]) {
-      await owner.organizationMember.create({ data: { organizationId: org.id, userId: u.id, status: "ACTIVE", joinedAt: now, roles: { create: [{ roleId: role.id }] } } });
+    // Real, active members with real roles: the database checks real membership (row-level security).
+    for (const [u, key] of [[hr, "SUPER_ADMIN"], [rec1, "HR_MANAGER"], [rec2, "HR_MANAGER"], [emp, "EMPLOYEE"]] as const) {
+      await owner.organizationMember.create({ data: { organizationId: org.id, userId: u.id, status: "ACTIVE", joinedAt: now, roles: { create: [{ roleId: role[key] }] } } });
     }
     const makeJob = (data: { title: string; status?: "DRAFT" | "PUBLISHED" | "CLOSED" | "ARCHIVED"; visibility?: "PUBLIC" | "INTERNAL_ONLY"; applicationDeadline?: Date }) =>
       owner.jobOpening.create({
@@ -145,10 +148,12 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const deps: AppDeps = { db, now, writeAudit: async (_db, e) => void entries.push(e), client: { ipAddress: null, userAgent: "vitest" }, storage: mem.storage };
     return {
       org, job, makeJob, deps, entries, files: mem.files,
-      hr: ctxFor(hr, org, HR),
-      rec1: ctxFor(rec1, org, RECRUITER),
-      rec2: ctxFor(rec2, org, RECRUITER),
-      rec1User: rec1, rec2User: rec2,
+      // Each with a real, live session: the database works out who is asking from it.
+      hr: await giveSession(owner, ctxFor(hr, org, HR)),
+      rec1: await giveSession(owner, ctxFor(rec1, org, HR)),
+      rec2: await giveSession(owner, ctxFor(rec2, org, HR)),
+      employee: await giveSession(owner, ctxFor(emp, org, EMPLOYEE)),
+      rec1User: rec1, rec2User: rec2, empUser: emp,
       target: (j: { slug: string }) => ({ organizationSlug: org.slug, jobSlug: j.slug }),
     };
   }
@@ -169,8 +174,11 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     expect(app.documents[0]).toMatchObject({ name: "cv.pdf", kind: "RESUME", sizeBytes: PDF.length });
     expect(w.files.size).toBe(1);
     expect([...w.files.keys()][0]).toMatch(/^resumes\/2026\/[0-9a-f-]{36}$/); // nothing the candidate typed is in the path
-    expect(w.entries.map((e) => e.action)).toEqual(["application.submitted"]);
-    expect(w.entries[0]).toMatchObject({ organizationId: w.org.id, actorUserId: null });
+    // The DATABASE writes the audit record of a public application itself (the app cannot skip or forge it).
+    const submitted = await owner.auditLog.findMany({ where: { organizationId: w.org.id, action: "application.submitted" } });
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ actorUserId: null, entityType: "application", entityId: created.id, metadata: { reference: created.referenceNumber, knownCandidate: false, hasResume: true } });
+    expect(w.entries).toEqual([]); // nothing went through the application's own audit writer
 
     // The central profile got the education, experience and skills too.
     const profile = await owner.candidateProfile.findUniqueOrThrow({ where: { email: input.email }, include: { educations: true, skills: true } });
@@ -227,8 +235,10 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const draft = await w.makeJob({ title: "Draft", status: "DRAFT" });
     const internal = await w.makeJob({ title: "Internal", visibility: "INTERNAL_ONLY" });
     const expired = await w.makeJob({ title: "Expired", applicationDeadline: new Date(now.getTime() - 1000) });
-    await expect(applyPublicly(w.deps, w.target(closedJob), person(), resume())).rejects.toMatchObject({ code: "closed" });
-    await expect(applyPublicly(w.deps, w.target(archived), person(), resume())).rejects.toMatchObject({ code: "closed" });
+    // Closed and archived jobs do not exist as far as the public is concerned (the public database context
+    // can only see published jobs); a published job past its deadline is reported as closed.
+    await expect(applyPublicly(w.deps, w.target(closedJob), person(), resume())).rejects.toMatchObject({ code: "not_found" });
+    await expect(applyPublicly(w.deps, w.target(archived), person(), resume())).rejects.toMatchObject({ code: "not_found" });
     await expect(applyPublicly(w.deps, w.target(expired), person(), resume())).rejects.toMatchObject({ code: "closed" });
     await expect(applyPublicly(w.deps, w.target(draft), person(), resume())).rejects.toMatchObject({ code: "not_found" });
     await expect(applyPublicly(w.deps, w.target(internal), person(), resume())).rejects.toMatchObject({ code: "not_found" });
@@ -253,7 +263,7 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     expect(app.history[0]).toMatchObject({ byName: "Hema HR" });
     expect(w.entries.at(-1)).toMatchObject({ action: "application.created_by_staff", actorUserId: w.hr.user.id });
 
-    await expect(createApplicationManually(w.deps, w.rec1, w.job.id, person(), null)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(createApplicationManually(w.deps, w.employee, w.job.id, person(), null)).rejects.toBeInstanceOf(ForbiddenError);
     const closedJob = await w.makeJob({ title: "Closed", status: "CLOSED" });
     await expect(createApplicationManually(w.deps, w.hr, closedJob.id, person(), null)).rejects.toMatchObject({ code: "closed" });
     const other = await world();
@@ -264,15 +274,15 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const w = await world();
     const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume());
 
-    // Before assignment the recruiter cannot see the application at all.
-    await expect(getApplication(db, w.rec1, id)).rejects.toMatchObject({ code: "not_found" });
-    expect((await listApplications(db, w.rec1, {}, TZ)).total).toBe(0);
+    // HR Managers see every application of their organisation, before and after it is assigned.
+    expect((await getApplication(db, w.rec1, id)).recruiter).toBeNull();
+    expect((await listApplications(db, w.rec1, {}, TZ)).total).toBe(1);
 
-    expect((await listAssignableRecruiters(db, w.hr)).map((r) => r.name)).toEqual(["Ravi Recruiter", "Rita Recruiter"]);
+    expect((await listAssignableRecruiters(db, w.hr)).map((r) => r.name)).toEqual(["Hema HR", "Ravi Manager", "Rita Manager"]);
     await assignRecruiter(w.deps, w.hr, id, w.rec1User.id);
 
     const seen = await getApplication(db, w.rec1, id);
-    expect(seen.recruiter).toMatchObject({ name: "Ravi Recruiter" });
+    expect(seen.recruiter).toMatchObject({ name: "Ravi Manager" });
     expect(seen.assignedAt).toEqual(now);
 
     const t1 = { ...w.deps, now: new Date(now.getTime() + 60_000) };
@@ -285,14 +295,14 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     const app = await getApplication(db, w.hr, id);
     expect(app.stage).toBe("SHORTLISTED");
     expect(app.stageChangedAt).toEqual(t3.now);
-    expect(app.notes).toEqual([expect.objectContaining({ body: "Spoke on the phone, sounds keen.", authorName: "Ravi Recruiter", createdAt: t1.now })]);
+    expect(app.notes).toEqual([expect.objectContaining({ body: "Spoke on the phone, sounds keen.", authorName: "Ravi Manager", createdAt: t1.now })]);
     expect(app.history.map((h) => [h.from, h.to, h.byName])).toEqual([
       ["UNDER_REVIEW", "SHORTLISTED", "Hema HR"],
-      ["APPLIED", "UNDER_REVIEW", "Ravi Recruiter"],
+      ["APPLIED", "UNDER_REVIEW", "Ravi Manager"],
       [null, "APPLIED", "The candidate"],
     ]);
-    expect(app.assignments).toEqual([expect.objectContaining({ recruiterName: "Ravi Recruiter", byName: "Hema HR", unassigned: false })]);
-    expect(w.entries.map((e) => e.action)).toEqual(["application.submitted", "application.assigned", "application.note_added", "application.stage_changed", "application.stage_changed"]);
+    expect(app.assignments).toEqual([expect.objectContaining({ recruiterName: "Ravi Manager", byName: "Hema HR", unassigned: false })]);
+    expect(w.entries.map((e) => e.action)).toEqual(["application.assigned", "application.note_added", "application.stage_changed", "application.stage_changed"]); // (the submission itself is audited by the database)
     expect(JSON.stringify(w.entries)).not.toContain("sounds keen"); // note text never reaches the audit log
   });
 
@@ -320,49 +330,65 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
   it("stops two people moving the same application at once", async () => {
     const w = await world();
     const { id } = await applyPublicly(w.deps, w.target(w.job), person(), resume());
-    const results = await Promise.allSettled([moveApplicationStage(w.deps, w.hr, id, "UNDER_REVIEW"), moveApplicationStage(w.deps, w.hr, id, "SHORTLISTED")]);
+    // Both try the same move. Whether the database runs them together or one after the other,
+    // exactly one may succeed; the other is told the application has already moved.
+    const results = await Promise.allSettled([moveApplicationStage(w.deps, w.hr, id, "UNDER_REVIEW"), moveApplicationStage(w.deps, w.rec1, id, "UNDER_REVIEW")]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "conflict" } });
     expect((await getApplication(db, w.hr, id)).history).toHaveLength(2);
   });
 
-  it("restricts recruiters to their own applications, candidates and documents", async () => {
+  it("keeps Employees out of every recruitment record and document", async () => {
     const w = await world();
-    const mine = await applyPublicly(w.deps, w.target(w.job), person({ fullName: "Mine Kumar" }), resume());
-    const theirs = await applyPublicly(w.deps, w.target(w.job), person({ fullName: "Theirs Singh" }), resume());
-    await assignRecruiter(w.deps, w.hr, mine.id, w.rec1User.id);
-    await assignRecruiter(w.deps, w.hr, theirs.id, w.rec2User.id);
-    const theirApp = await getApplication(db, w.hr, theirs.id);
+    const a = await applyPublicly(w.deps, w.target(w.job), person({ fullName: "Hidden Candidate" }), resume());
+    const app = await getApplication(db, w.hr, a.id);
+    const e = w.employee;
+    const refused = [
+      () => listApplications(db, e, {}, TZ),
+      () => listPipeline(db, e, {}, TZ),
+      () => listCandidates(db, e, {}),
+      () => getApplication(db, e, a.id),
+      () => getCandidate(db, e, app.candidate.id),
+      () => listAssignableRecruiters(db, e),
+      () => moveApplicationStage(w.deps, e, a.id, "UNDER_REVIEW"),
+      () => addApplicationNote(w.deps, e, a.id, "peeking"),
+      () => assignRecruiter(w.deps, e, a.id, w.rec1User.id),
+      () => createApplicationManually(w.deps, e, w.job.id, person(), null),
+      () => updateCandidateNotes(w.deps, e, app.candidate.id, "x"),
+      () => readDocument(w.deps, e, app.documents[0]!.id),
+    ];
+    for (const attempt of refused) await expect(attempt()).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await getApplication(db, w.hr, a.id)).stage).toBe("APPLIED"); // nothing changed
+    expect(w.entries).toEqual([]); // nothing was recorded (the submission itself is audited by the database)
 
-    expect((await listApplications(db, w.rec1, {}, TZ)).items.map((a) => a.candidate.name)).toEqual(["Mine Kumar"]);
-    expect((await listPipeline(db, w.rec1, {}, TZ)).flatMap((c) => c.items).map((a) => a.candidate.name)).toEqual(["Mine Kumar"]);
-    expect((await listCandidates(db, w.rec1, {})).items.map((c) => c.name)).toEqual(["Mine Kumar"]);
-    // Searching for the other person finds nothing either.
-    expect((await listApplications(db, w.rec1, { search: "Theirs" }, TZ)).total).toBe(0);
-
-    await expect(getApplication(db, w.rec1, theirs.id)).rejects.toMatchObject({ code: "not_found" });
-    await expect(getCandidate(db, w.rec1, theirApp.candidate.id)).rejects.toMatchObject({ code: "not_found" });
-    await expect(moveApplicationStage(w.deps, w.rec1, theirs.id, "UNDER_REVIEW")).rejects.toMatchObject({ code: "not_found" });
-    await expect(addApplicationNote(w.deps, w.rec1, theirs.id, "peeking")).rejects.toMatchObject({ code: "not_found" });
-    await expect(readDocument(w.deps, w.rec1, theirApp.documents[0]!.id)).rejects.toMatchObject({ code: "not_found" });
-    // Recruiters cannot reassign, not even their own application.
-    await expect(assignRecruiter(w.deps, w.rec1, mine.id, w.rec2User.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(updateCandidateNotes(w.deps, w.rec1, theirApp.candidate.id, "x")).rejects.toBeInstanceOf(ForbiddenError);
-
-    // Their own resume downloads, and the download is recorded.
-    const myApp = await getApplication(db, w.rec1, mine.id);
-    const file = await readDocument(w.deps, w.rec1, myApp.documents[0]!.id);
-    expect(file).toMatchObject({ name: "cv.pdf", mimeType: "application/pdf" });
+    // Seeing an application is not enough to read the resume: that needs its own permission.
+    const noDocs = await giveSession(owner, { ...w.hr, permissions: new Set(HR.filter((p) => p !== "document:read")) });
+    expect((await getApplication(db, noDocs, a.id)).documents).toEqual([]);
+    await expect(readDocument(w.deps, noDocs, app.documents[0]!.id)).rejects.toBeInstanceOf(ForbiddenError);
+    const file = await readDocument(w.deps, w.rec1, app.documents[0]!.id);
     expect(file.bytes).toEqual(PDF);
     expect(w.entries.at(-1)).toMatchObject({ action: "document.downloaded", actorUserId: w.rec1.user.id });
+  });
 
-    // Someone with no application permission at all is refused outright.
-    const nobody = { ...w.rec1, permissions: new Set(["job:read"]) };
-    await expect(listApplications(db, nobody, {}, TZ)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(listCandidates(db, nobody, {})).rejects.toBeInstanceOf(ForbiddenError);
-    // Seeing the application is not enough to read the resume: that needs its own permission.
-    const noDocs = { ...w.hr, permissions: new Set(HR.filter((p) => p !== "document:read")) };
-    expect((await getApplication(db, noDocs, mine.id)).documents).toEqual([]);
-    await expect(readDocument(w.deps, noDocs, myApp.documents[0]!.id)).rejects.toBeInstanceOf(ForbiddenError);
+  it("only an active HR Manager or Super Admin can be the responsible HR person", async () => {
+    const w = await world();
+    const a = await applyPublicly(w.deps, w.target(w.job), person(), resume());
+    // The Employee is not offered, and cannot be chosen even by asking directly.
+    expect((await listAssignableRecruiters(db, w.hr)).map((r) => r.name)).toEqual(["Hema HR", "Ravi Manager", "Rita Manager"]);
+    await expect(assignRecruiter(w.deps, w.hr, a.id, w.empUser.id)).rejects.toMatchObject({ code: "invalid" });
+    // A suspended HR Manager drops out of the list and cannot be chosen.
+    await owner.organizationMember.updateMany({ where: { organizationId: w.org.id, userId: w.rec2User.id }, data: { status: "SUSPENDED" } });
+    expect((await listAssignableRecruiters(db, w.hr)).map((r) => r.name)).toEqual(["Hema HR", "Ravi Manager"]);
+    await expect(assignRecruiter(w.deps, w.hr, a.id, w.rec2User.id)).rejects.toMatchObject({ code: "invalid" });
+    // Any HR Manager may change the responsible person; the history keeps every change.
+    await assignRecruiter(w.deps, w.hr, a.id, w.rec1User.id);
+    await assignRecruiter({ ...w.deps, now: new Date(now.getTime() + 60_000) }, w.rec1, a.id, null);
+    const app = await getApplication(db, w.hr, a.id);
+    expect(app.recruiter).toBeNull();
+    expect(app.assignments.map((x) => [x.recruiterName, x.unassigned, x.byName])).toEqual([
+      [null, true, "Ravi Manager"],
+      ["Ravi Manager", false, "Hema HR"],
+    ]);
   });
 
   it("keeps organisations completely apart", async () => {

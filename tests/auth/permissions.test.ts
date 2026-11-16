@@ -23,9 +23,9 @@ const ctxWith = (perms: string[], organization: AuthContext["organization"] = { 
 });
 
 describe("the permission list matches the database seed", () => {
-  it("has no duplicates and the expected 50 permissions", () => {
+  it("has no duplicates and the expected 62 permissions", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSION_KEYS.length);
-    expect(PERMISSION_KEYS).toHaveLength(50);
+    expect(PERMISSION_KEYS).toHaveLength(62);
   });
   it("is exactly the set of permissions that prisma/seed.ts creates", () => {
     const seed = readFileSync("prisma/seed.ts", "utf8");
@@ -37,14 +37,12 @@ describe("the permission list matches the database seed", () => {
 });
 
 describe("read scope", () => {
-  it("is 'all' with the full read permission, even if the narrower one is also present", () => {
+  it("is all-or-nothing: there is no 'assigned only' level with the three roles", () => {
     expect(readScope(new Set(["candidate:read"]), "candidate")).toBe("all");
-    expect(readScope(new Set(["candidate:read", "candidate:read_assigned"]), "candidate")).toBe("all");
+    expect(readScope(new Set(["candidate:read_assigned"]), "candidate")).toBe("none");
+    expect(readScope(new Set(["interview:read_assigned"]), "interview")).toBe("none");
   });
-  it("is 'assigned' with only the narrower permission (an interviewer)", () => {
-    expect(readScope(new Set(["interview:read_assigned"]), "interview")).toBe("assigned");
-  });
-  it("is 'none' otherwise, and one resource never grants another", () => {
+  it("one resource never grants another", () => {
     expect(readScope(new Set(), "application")).toBe("none");
     expect(readScope(new Set(["candidate:read"]), "application")).toBe("none");
     expect(readScope(new Set(["application:create"]), "application")).toBe("none");

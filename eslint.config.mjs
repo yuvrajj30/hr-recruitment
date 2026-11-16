@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "src/generated/**",
     // One-off Milestone 2 migration helper (plain Node script, not part of the app).
     "scripts/m2-ops/**",
+    // One-off timestamp correction tool (plain Node script, not part of the app).
+    "scripts/tz-ops/**",
   ]),
   {
     // Tests and database check scripts talk to raw database drivers where "any" is common.

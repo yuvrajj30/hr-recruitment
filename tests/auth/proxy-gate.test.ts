@@ -13,6 +13,9 @@ describe("proxy gate", () => {
     expect(gate("/careers/the-trust-coffee", false)).toEqual({ kind: "allow" });
     expect(gate("/careers/the-trust-coffee/jobs/barista", false)).toEqual({ kind: "allow" });
     expect(gate("/careers-admin", false).kind).toBe("redirect");
+    expect(gate("/invite/abc", false)).toEqual({ kind: "allow" });
+    expect(gate("/invite", false).kind).toBe("redirect");
+    expect(gate("/invites/abc", false).kind).toBe("redirect");
     expect(gate("/recruitment/applications", false).kind).toBe("redirect");
     expect(gate("/recruitment/candidates/x", false).kind).toBe("redirect");
   });
