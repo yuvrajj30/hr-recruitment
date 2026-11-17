@@ -18,9 +18,8 @@ The fix has two parts that must go together:
 If (1) is switched on without (2), existing times display 5 h 30 min early. If (2) runs and the old app keeps
 writing, new rows are wrong again. So the app is stopped between the two.
 
-The six pending migrations run straight after the correction, in the same window. The last of them
-(security hardening) makes the database itself check session deadlines against its own clock, so it **depends on**
-both parts above.
+The seven pending migrations run straight after the correction, in the same window. From the sixth on (security
+hardening) the database itself checks session deadlines against its own clock, so they **depend on** both parts above.
 
 ## Approved approach (in principle)
 
@@ -38,7 +37,7 @@ both parts above.
 - `scripts/tz-ops/tz-backup.cjs`, `scripts/tz-ops/storage-backup.cjs` — database and file backups, each with checksums.
 - `scripts/tz-ops/tz-restore-verify.cjs` — restores a backup into a new database and proves it is an exact copy.
 - `scripts/tz-ops/tz-ops.cjs` — `preflight` (read-only), `apply` (guarded, one transaction, verifies every value, commits only if all checks pass), `post` (read-only).
-- `prisma/migrations/` — the six pending migrations, applied by `npx prisma migrate deploy` in this order:
+- `prisma/migrations/` — the seven pending migrations, applied by `npx prisma migrate deploy` in this order:
 
 | # | Migration | What it changes |
 |---|---|---|
@@ -48,6 +47,7 @@ both parts above.
 | 4 | `20261115180000_invitation_acceptance` | Functions for accepting an invitation. No data changes. |
 | 5 | `20261116000000_timestamp_correction_objects` | The correction's tables/view/triggers, idempotently (changes nothing on a corrected database). |
 | 6 | `20261116010000_security_hardening` | Session-bound identity, sign-in and passwords inside the database, least privilege. No data changes. Installs `pgcrypto`. |
+| 7 | `20261117000000_candidate_privacy` | Privacy-notice settings and 12-month retention per organisation, the age confirmation, no applicant IP address, candidate removal (`app_remove_candidate`); HR Managers get `candidate:delete`. Adds columns and one role permission; changes no existing value. |
 
 Each migration runs inside its own transaction: one that fails leaves **nothing** of itself behind.
 
@@ -77,7 +77,7 @@ Run from `C:\Projects\hr-recruitment` in a **new** terminal (the tools refuse if
 4. **Same-day rehearsal on that verified copy** (it is today's data, so it shows exactly what will happen):
    1. `node scripts/tz-ops/tz-ops.cjs apply --database <copy> --confirm "CORRECT TIMESTAMPS IN <copy>"`
    2. `node scripts/tz-ops/tz-ops.cjs post --database <copy> --report <copy's report>` (strict: must pass)
-   3. Apply the six migrations to the copy (the same command as step 9, pointed at the copy).
+   3. Apply the seven migrations to the copy (the same command as step 9, pointed at the copy).
    4. `node scripts/tz-ops/tz-ops.cjs post --database <copy> --report <copy's report> --write-expected <expected file>`
       — records the changes the migrations make to the corrected values. **Read that list**: it must be what
       "Expected changes" below describes, nothing else.
@@ -97,7 +97,7 @@ Run from `C:\Projects\hr-recruitment` in a **new** terminal (the tools refuse if
 7. **Post-check, strict** (read-only): `node scripts/tz-ops/tz-ops.cjs post --report <report from step 6>` → must pass.
    Nothing may be missing or changed at this point.
 8. **Switch the app to UTC sessions:** add `DB_SESSION_TIME_ZONE=UTC` to `.env`. (Must happen before the app writes anything again.)
-9. **Apply the pending migrations** (three roles, row-level security, user management, invitation acceptance, correction objects, security hardening — six in all): `npx prisma migrate deploy`. This is the separate, also-unapproved migration step; the correction is designed to run immediately before it.
+9. **Apply the pending migrations** (three roles, row-level security, user management, invitation acceptance, correction objects, security hardening, candidate privacy — seven in all): `npx prisma migrate deploy`. This is the separate, also-unapproved migration step; the correction is designed to run immediately before it.
    If it stops, see "Rollback": do not start the app.
 10. **Post-check against the expected changes** (read-only): `node scripts/tz-ops/tz-ops.cjs post --report <report from step 6> --expected <expected file from step 4>` → must pass. **The app is not started until it does.**
 11. **Start the app**, sign in, check a few known times (job created / application received / member since) against what users remember.
@@ -114,6 +114,12 @@ same kinds of change:
 - `organization_members.updated_at`: each member the migration suspends (1: the Test Recruiter).
 - `applications.updated_at`: each application whose responsible person was cleared (1: APP-2026-4ECR2D).
 - `sessions.revoked_at`: open sessions of suspended members (none in the 15 Nov data).
+
+The other six migrations change no existing timestamp value, so the list is the same with all seven applied
+(confirmed in the 17 Nov rehearsal below). After the cut-over, set the real organisation's privacy-notice name and
+privacy contact on Recruitment → Privacy before the careers pages are announced (Super Admin only):
+notice name `TheTrustCoffee`, privacy contact `admin.support@thecrushcoffeeofficial.com` (both confirmed by the
+owner on 17 Nov 2026).
 
 ## Restore verification
 
@@ -155,6 +161,7 @@ General rules: the app stays **stopped** until the database is in a known good s
 | Step 9: migration **2, 3 or 4** fails | Corrected; three roles in place; the failed migration left nothing; row-level security incomplete. | The new app must not be started on this state. Fix + `migrate resolve --rolled-back <name>` + deploy again; or restore the backup. |
 | Step 9: migration **5** fails | As above, with all access rules of migrations 2–4. | Same: fix and redeploy, or restore the backup. |
 | Step 9: migration **6** fails | As above, without the hardening. | Same. Do **not** start the app "temporarily" without migration 6: its code expects the database's sign-in functions. |
+| Step 9: migration **7** fails | Fully hardened, without the privacy changes. | Same. Do not start the app on this state either: its forms send the age confirmation the database expects from migration 7. |
 | Step 10 (post-check with expected changes) fails | Fully migrated, app not started. | Compare the unexpected differences with the rehearsal. If they cannot be explained, restore the backup. |
 | After step 11: a problem while people are using the app | Fully migrated **plus new records the backup does not contain**. | See below. |
 
@@ -183,7 +190,9 @@ restore comparison).
 
 - Correction alone: `hr_recruitment_tz_rehearsal`, `hr_recruitment_tz_rehearsal_pkg` (15 Nov 2026).
 - Role migration before/after (copy since removed; report `roles-rehearsal-report-20261115T153620.json` kept); full
-  production order with all six migrations: `hr_recruitment_hardening_rehearsal` (identical in structure to the test database).
+  production order with the first six migrations: `hr_recruitment_hardening_rehearsal` (identical in structure to the test database).
+- Full production order with all seven migrations (17 Nov 2026): `hr_recruitment_rehearsal_seven_test`, restored from the
+  15:05 backup (see the rehearsal report of that date).
 - Restore verification of the 15:05 backup against the real database (read-only): exact copy, 256 rows in 47 tables
   (copy since removed).
 - Safeguards (16 Nov 2026): refusal while another connection is open; a transaction or an idle connection that

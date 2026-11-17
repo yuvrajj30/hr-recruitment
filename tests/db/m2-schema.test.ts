@@ -81,7 +81,8 @@ describe.skipIf(!enabled)("Milestone 2 tables (test database)", () => {
       expect(seen).toBe(2);
       await rt.query(`UPDATE auth_login_attempts SET succeeded = true WHERE identifier_hash = 'hash-1'`);
       // the cleanup the app will run: remove attempts older than 14 days
-      const removed = (await rt.query(`DELETE FROM auth_login_attempts WHERE created_at < now() - interval '14 days'`)).rowCount;
+      // (limited to this test's own rows: other test files run in parallel against the same table)
+      const removed = (await rt.query(`DELETE FROM auth_login_attempts WHERE created_at < now() - interval '14 days' AND identifier_hash IN ('hash-1','hash-2')`)).rowCount;
       expect(removed).toBe(1);
       await rt.query(`DELETE FROM auth_login_attempts`);
     } finally {

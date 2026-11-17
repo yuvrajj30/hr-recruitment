@@ -15,5 +15,11 @@ export default defineConfig({
       { find: /^@\//, replacement: fileURLToPath(new URL("./src/", import.meta.url)) },
     ],
   },
-  test: { environment: "node", include: ["tests/**/*.test.ts"], testTimeout: 30000 },
+  test: {
+    environment: "node",
+    include: ["tests/**/*.test.ts"],
+    testTimeout: 30000,
+    // Before anything runs: is the test database reachable, and really a *_test database? (tests/global-setup.ts)
+    globalSetup: ["./tests/global-setup.ts"],
+  },
 });

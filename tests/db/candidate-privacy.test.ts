@@ -258,15 +258,42 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
     const inA = await rejectedApplicant(a, input);
     const inB = await applyPublicly(b.deps, b.target(b.job), input, resume(), AGE_OK);
     const shared = (await owner.organizationCandidate.findUniqueOrThrow({ where: { id: inA.oc }, select: { candidateId: true } })).candidateId;
+    // Organisation B works with the person too: a stage move with a reason, a note, and notes on the person.
+    const bOc = (await owner.application.findUniqueOrThrow({ where: { id: inB.id }, select: { organizationCandidateId: true } })).organizationCandidateId;
+    await moveApplicationStage(b.deps, b.hr, inB.id, "UNDER_REVIEW");
+    await addApplicationNote(b.deps, b.hr, inB.id, "Organisation B: strong latte art, call back.");
+    await updateCandidateNotes(b.deps, b.hr, bOc, "Organisation B: prefers morning shifts.");
+
+    // Everything organisation B holds about the person, read with the owner account (bypasses nothing B sees).
+    const bState = async () => ({
+      profile: await owner.candidateProfile.findUniqueOrThrow({ where: { id: shared }, include: { educations: true, experiences: true, skills: true } }),
+      record: await owner.organizationCandidate.findUniqueOrThrow({ where: { id: bOc } }),
+      application: await owner.application.findUniqueOrThrow({ where: { id: inB.id } }),
+      history: await owner.applicationStatusHistory.findMany({ where: { applicationId: inB.id }, orderBy: { createdAt: "asc" } }),
+      notes: await owner.applicationNote.findMany({ where: { applicationId: inB.id } }),
+      documents: await owner.candidateDocument.findMany({ where: { organizationId: b.org.id } }),
+      files: [...b.files.entries()].map(([k, v]) => [k, Buffer.from(v).toString("hex")]),
+    });
+    const before = await bState();
+    expect(before.profile.educations.length + before.profile.experiences.length + before.profile.skills.length).toBeGreaterThan(0);
 
     await removeCandidate(a.deps, a.sa, inA.oc);
 
-    // Organisation B still has the person, their profile and their resume.
+    // Byte for byte, organisation B's data is exactly as it was: profile (with education, experience, skills),
+    // its own record and notes, application, stage history (reasons included), notes, documents and files.
+    expect(await bState()).toEqual(before);
+    // And B's staff still see and use all of it through the app.
     const bApp = await getApplication(db, b.hr, inB.id);
     expect(bApp.candidate.email).toBe(input.email);
+    expect(bApp.stage).toBe("UNDER_REVIEW");
+    expect(bApp.notes.map((n) => n.body)).toEqual(["Organisation B: strong latte art, call back."]);
     expect(bApp.documents).toHaveLength(1);
+    expect((await readDocument(b.deps, b.hr, bApp.documents[0]!.id)).bytes).toEqual(PDF);
+    const bCandidate = await getCandidate(db, b.hr, bOc);
+    expect(bCandidate).toMatchObject({ name: input.fullName, email: input.email, notes: "Organisation B: prefers morning shifts." });
+    expect((await listCandidates(db, b.hr, {})).items.map((c) => c.id)).toContain(bOc);
     expect(b.files.size).toBe(1);
-    expect(await owner.candidateProfile.findUniqueOrThrow({ where: { id: shared } })).toMatchObject({ email: input.email, anonymizedAt: null });
+    expect(before.profile).toMatchObject({ email: input.email, anonymizedAt: null });
     // Organisation A's record now points to a separate, anonymous profile: no link back to the person.
     const aRecord = await owner.organizationCandidate.findUniqueOrThrow({ where: { id: inA.oc }, include: { candidate: true } });
     expect(aRecord.candidateId).not.toBe(shared);
