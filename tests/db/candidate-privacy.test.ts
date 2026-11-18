@@ -81,11 +81,8 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
   afterAll(async () => {
     if (owner) {
       await owner.candidateDocument.deleteMany({ where: { organizationId: { in: orgIds } } });
-      await raw.query("BEGIN");
-      await raw.query(`ALTER TABLE application_status_history DISABLE TRIGGER application_status_history_no_update`);
-      await raw.query(`DELETE FROM application_status_history WHERE organization_id = ANY($1)`, [orgIds]);
-      await raw.query(`ALTER TABLE application_status_history ENABLE TRIGGER application_status_history_no_update`);
-      await raw.query("COMMIT");
+      // Stage history goes with its applications (the history guard blocks only UPDATE, so no table lock is
+      // needed, which would hold up the other test files running at the same time).
       await owner.application.deleteMany({ where: { organizationId: { in: orgIds } } });
       const profiles = (await owner.organizationCandidate.findMany({ where: { organizationId: { in: orgIds } }, select: { candidateId: true } })).map((r) => r.candidateId);
       await owner.organizationCandidate.deleteMany({ where: { organizationId: { in: orgIds } } });

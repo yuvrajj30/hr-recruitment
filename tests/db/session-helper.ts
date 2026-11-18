@@ -13,15 +13,30 @@ import { generateSessionToken, hashToken } from "@/lib/security/tokens";
 // security_hardening migration the DATABASE writes some audit records itself (a public application, an
 // accepted invitation), so a test can no longer swap in a recorder for those. Only on the disposable test
 // database: this refuses to run anywhere else. One transaction: the protection is off only inside it.
+//
+// Switching the trigger off locks the whole audit table, and test files run in parallel against the same
+// database, so this must hold that lock as briefly as possible: it gives up waiting for the lock after a
+// short time and tries again (instead of sitting in the queue while every other test's audit writes queue
+// behind it), and the delete uses the organisation index.
 export async function purgeTestAuditRows(owner: Db, organizationIds: string[]): Promise<void> {
   if (organizationIds.length === 0) return;
-  await owner.$transaction(async (tx) => {
-    const [{ name }] = await tx.$queryRaw<{ name: string }[]>`SELECT current_database() AS name`;
-    if (!/_test$/.test(name)) throw new Error(`purgeTestAuditRows: refusing to run on "${name}"`);
-    await tx.$executeRawUnsafe(`ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"`);
-    await tx.$executeRaw`DELETE FROM "audit_logs" WHERE "organization_id"::text = ANY(${organizationIds})`;
-    await tx.$executeRawUnsafe(`ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"`);
-  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await owner.$transaction(async (tx) => {
+        const [{ name }] = await tx.$queryRaw<{ name: string }[]>`SELECT current_database() AS name`;
+        if (!/_test$/.test(name)) throw new Error(`purgeTestAuditRows: refusing to run on "${name}"`);
+        await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '300ms'`);
+        await tx.$executeRawUnsafe(`ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"`);
+        await tx.$executeRaw`DELETE FROM "audit_logs" WHERE "organization_id" = ANY(${organizationIds}::uuid[])`;
+        await tx.$executeRawUnsafe(`ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"`);
+      });
+      return;
+    } catch (error) {
+      const lockBusy = /lock timeout|55P03/i.test(String((error as Error)?.message ?? "") + JSON.stringify((error as { meta?: unknown })?.meta ?? ""));
+      if (!lockBusy || attempt >= 40) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 + Math.floor(Math.random() * 200)));
+    }
+  }
 }
 
 // A live session for this user in this organisation. Returns the raw token (what the browser cookie holds).

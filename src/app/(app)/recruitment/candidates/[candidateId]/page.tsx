@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { type ReactNode, Suspense } from "react";
+import { formatSlot, InterviewStatusBadge, roundTitle, typeLabel } from "@/components/interviews/interview-bits";
 import { CandidateNotesForm } from "@/components/recruitment/application-controls";
+import { listInterviewsFor } from "@/lib/interviews/interviews";
 import { NoAccess, StageBadge } from "@/components/recruitment/job-bits";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -44,7 +46,10 @@ async function CandidateContent({ params }: { params: Promise<{ candidateId: str
     if (error instanceof RecruitmentError && error.code === "not_found") notFound();
     throw error;
   }
-  const { timezone } = await getOrganizationSettings(db, auth);
+  const [{ timezone }, interviews] = await Promise.all([
+    getOrganizationSettings(db, auth),
+    auth.permissions.has("interview:read") ? listInterviewsFor(db, auth, { organizationCandidateId: c.id }) : Promise.resolve(null),
+  ]);
   const latest = c.latest;
   const canEditNotes = auth.permissions.has("candidate:update");
   const canRemove = auth.permissions.has("candidate:delete");
@@ -183,11 +188,31 @@ async function CandidateContent({ params }: { params: Promise<{ candidateId: str
             <CardHeader>
               <div>
                 <CardTitle>Interview history</CardTitle>
-                <CardDescription>Interviews appear here once the Interviews module is in use.</CardDescription>
+                <CardDescription>Every interview across this person&apos;s applications, newest first.</CardDescription>
               </div>
             </CardHeader>
             <CardBody>
-              <p className="text-[13px] text-fg-muted">No interviews recorded.</p>
+              {interviews === null ? (
+                <p className="text-[13px] text-fg-muted">Your role does not include viewing interviews.</p>
+              ) : interviews.length === 0 ? (
+                <p className="text-[13px] text-fg-muted">No interviews recorded.</p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {interviews.map((i) => (
+                    <li key={i.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-[13px] first:pt-0 last:pb-0">
+                      <span className="min-w-0">
+                        <Link href={`/interviews/${i.id}`} className="font-medium text-fg hover:text-accent hover:underline">
+                          {i.jobTitle} · {roundTitle(i.roundNumber, i.roundName)}
+                        </Link>
+                        <span className="block text-xs text-fg-muted">
+                          {formatSlot(i.start, i.end, timezone)} · {typeLabel(i.type)}
+                        </span>
+                      </span>
+                      <InterviewStatusBadge status={i.status} />
+                    </li>
+                  ))}
+                </ul>
+              )}
             </CardBody>
           </Card>
         </div>

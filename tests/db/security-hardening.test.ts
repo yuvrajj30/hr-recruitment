@@ -21,6 +21,7 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   // called by row-level security policies and trigger conditions
   app_session_identity: true, app_staff_role: true, app_member_in_my_org: true, app_member_is_me: true, app_member_role_key: true,
   member_is_super_admin: true, role_is_super_admin: true,
+  app_feedback_visible: true, // interview feedback independence (20261118000000_interviews_feedback)
   // called by the application
   app_public_organization: true, app_find_or_create_candidate_profile: true, app_submit_public_application: true,
   app_sign_in: true, app_my_password_matches: true, app_change_my_password: true, app_invitation_lookup: true, app_accept_invitation: true,
@@ -28,6 +29,7 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   // internal only
   app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,
+  guard_interview_changes: false, guard_interview_participants: false, guard_interview_feedback: false, guard_hiring_decisions: false, interview_candidate_removed: false,
 };
 
 describe.skipIf(!enabled)("security hardening: what the app's database account cannot do (test database)", () => {

@@ -1,18 +1,23 @@
-import { ArrowLeft, Download, FileText } from "lucide-react";
+import { ArrowLeft, CalendarPlus, Download, FileText } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { type ReactNode, Suspense } from "react";
+import { DecisionBadge, formatSlot, InterviewStatusBadge, roundTitle, typeLabel } from "@/components/interviews/interview-bits";
+import { DecisionForm } from "@/components/interviews/interview-controls";
 import { NoteForm, RecruiterPicker, StageMover } from "@/components/recruitment/application-controls";
 import { NoAccess, StageBadge } from "@/components/recruitment/job-bits";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { readScope } from "@/lib/auth/permissions";
 import { getAuthRuntime } from "@/lib/auth/runtime";
 import { getCurrentAuth } from "@/lib/auth/server-session";
+import { type DecisionView, getDecision, type InterviewListItem, listInterviewsFor } from "@/lib/interviews/interviews";
+import { canScheduleFor } from "@/lib/interviews/rules";
 import { type ApplicationDetail, getApplication, listAssignableRecruiters } from "@/lib/recruitment/applications";
 import { RecruitmentError } from "@/lib/recruitment/errors";
 import { getOrganizationSettings } from "@/lib/recruitment/jobs";
@@ -48,7 +53,17 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
   const canMove = auth.permissions.has("application:move_stage");
   const canNote = auth.permissions.has("application:note");
   const canSeeCandidate = readScope(auth.permissions, "candidate") !== "none";
-  const [{ timezone }, recruiters] = await Promise.all([getOrganizationSettings(db, auth), canAssign ? listAssignableRecruiters(db, auth) : Promise.resolve([])]);
+  const canReadInterviews = auth.permissions.has("interview:read");
+  const canSchedule = auth.permissions.has("interview:schedule") && canScheduleFor(app.stage);
+  const canReadDecision = auth.permissions.has("decision:read");
+  const [{ timezone }, recruiters, interviews, decision] = await Promise.all([
+    getOrganizationSettings(db, auth),
+    canAssign ? listAssignableRecruiters(db, auth) : Promise.resolve([]),
+    canReadInterviews ? listInterviewsFor(db, auth, { applicationId: app.id }) : Promise.resolve([] as InterviewListItem[]),
+    canReadDecision ? getDecision(db, auth, app.id) : Promise.resolve(null as DecisionView | null),
+  ]);
+  const hasCompletedInterview = interviews.some((i) => i.status === "COMPLETED");
+  const canDecide = auth.permissions.has("decision:make") && hasCompletedInterview && app.stage !== "REJECTED" && app.stage !== "WITHDRAWN";
   const s = app.snapshot;
 
   // One timeline: stage changes and changes of the responsible HR person, newest first.
@@ -178,6 +193,46 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
             </CardBody>
           </Card>
 
+          {canReadInterviews && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Interviews</CardTitle>
+                  <CardDescription>Every round for this application, newest first.</CardDescription>
+                </div>
+                {canSchedule && (
+                  <Button size="sm" variant="secondary" asChild>
+                    <Link href={`/interviews/new?application=${app.id}`}>
+                      <CalendarPlus aria-hidden />
+                      Schedule interview
+                    </Link>
+                  </Button>
+                )}
+              </CardHeader>
+              <CardBody>
+                {interviews.length === 0 ? (
+                  <p className="text-[13px] text-fg-muted">No interviews yet.</p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {interviews.map((i) => (
+                      <li key={i.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-[13px] first:pt-0 last:pb-0">
+                        <span className="min-w-0">
+                          <Link href={`/interviews/${i.id}`} className="font-medium text-fg hover:text-accent hover:underline">
+                            {roundTitle(i.roundNumber, i.roundName)}
+                          </Link>
+                          <span className="block text-xs text-fg-muted">
+                            {formatSlot(i.start, i.end, timezone)} · {typeLabel(i.type)} · {i.participants.map((p) => p.name).join(", ")}
+                          </span>
+                        </span>
+                        <InterviewStatusBadge status={i.status} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardBody>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <div>
@@ -213,6 +268,31 @@ async function ApplicationContent({ params, searchParams }: { params: Promise<{ 
               </CardHeader>
               <CardBody>
                 <StageMover applicationId={app.id} stage={app.stage} />
+              </CardBody>
+            </Card>
+          )}
+
+          {canReadDecision && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Hiring decision</CardTitle>
+                  <CardDescription>Recorded after the interviews. The candidate does not see the reason.</CardDescription>
+                </div>
+              </CardHeader>
+              <CardBody className="space-y-3 text-[13px]">
+                {decision ? (
+                  <div className="space-y-1">
+                    <DecisionBadge outcome={decision.outcome} />
+                    {decision.rationale && <p className="whitespace-pre-line text-fg">“{decision.rationale}”</p>}
+                    <p className="text-xs text-fg-muted">
+                      {decision.decidedByName} · {formatDateTime(decision.decidedAt, timezone)}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-fg-muted">{hasCompletedInterview ? "No decision yet." : "A decision can be recorded once an interview has been completed."}</p>
+                )}
+                {canDecide && <DecisionForm applicationId={app.id} current={decision?.outcome ?? null} />}
               </CardBody>
             </Card>
           )}
