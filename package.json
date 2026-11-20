@@ -15,7 +15,9 @@
     "auth:set-password": "tsx --conditions=react-server scripts/set-password.ts",
     "auth:list-users": "tsx scripts/list-users.ts",
     "privacy:retention": "tsx --conditions=react-server scripts/privacy-retention.ts",
-    "backup:expiry": "tsx scripts/backup-expiry.ts"
+    "backup:expiry": "tsx scripts/backup-expiry.ts",
+    "backup:daily": "node scripts/ops/backup-daily.cjs",
+    "backup:status": "node scripts/ops/backup-status.cjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

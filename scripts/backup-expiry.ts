@@ -4,25 +4,36 @@
 // (storage-private-* folders).
 //
 //   npm run backup:expiry               lists what has expired; deletes NOTHING
-//   npm run backup:expiry -- --apply    deletes what has expired (needs the owner's go-ahead the first time)
+//   npm run backup:expiry -- --apply    deletes what has expired (the daily scheduled job does this)
 //
-// The newest database dump is never deleted, whatever its age, so there is always one backup to restore from.
-// Folder: HR_BACKUP_DIR, or ~/hr-recruitment-backups.
-import { readdirSync, rmSync, statSync } from "node:fs";
+// The newest VERIFIED database backup (a .dump with its .sha256) and the newest VERIFIED file backup (a
+// storage-private-* folder with manifest.json.sha256) are kept whatever their age, so there is always one complete
+// pair to restore from. That only happens when backups have stopped; the daily job then reports the stale backups
+// (scripts/ops/backup-status.cjs), and someone has to act. Half-written leftovers (*.partial) of a failed run are
+// deleted after one day. Folder: HR_BACKUP_DIR, or ~/hr-recruitment-backups.
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { BACKUP_RETENTION_DAYS } from "../src/lib/recruitment/privacy-rules";
 
-type Entry = { name: string; full: string; mtime: Date; dir: boolean };
+// `verified` (directories only): the file backup's manifest and its checksum are there.
+type Entry = { name: string; full: string; mtime: Date; dir: boolean; verified?: boolean };
+
+const PARTIAL_MAX_DAYS = 1;
 
 export function expiredBackups(entries: Entry[], now: Date, retentionDays: number): Entry[] {
   const cutoff = now.getTime() - retentionDays * 86_400_000;
-  const dumps = entries.filter((e) => !e.dir && e.name.endsWith(".dump")).sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
-  const keep = new Set<string>(dumps.slice(0, 1).map((d) => d.name)); // the newest dump always stays
+  const partialCutoff = now.getTime() - PARTIAL_MAX_DAYS * 86_400_000;
+  const names = new Set(entries.map((e) => e.name));
+  const byAge = (a: Entry, b: Entry) => b.mtime.getTime() - a.mtime.getTime();
+  const newestDump = entries.filter((e) => !e.dir && e.name.endsWith(".dump") && names.has(e.name + ".sha256")).sort(byAge)[0];
+  const newestFiles = entries.filter((e) => e.dir && /^storage-private-[0-9A-Za-z]+$/.test(e.name) && e.verified).sort(byAge)[0];
+  const isPartial = (e: Entry) => e.name.endsWith(".partial");
   const isBackup = (e: Entry) => (e.dir ? /^storage-private-/.test(e.name) : /\.dump(\.[a-z0-9.-]+)?$/.test(e.name));
-  // A side file (x.dump.sha256) follows its dump.
-  const dumpOf = (e: Entry) => e.name.replace(/(\.dump)\..*$/, "$1");
-  return entries.filter((e) => isBackup(e) && e.mtime.getTime() < cutoff && !keep.has(e.dir ? "" : dumpOf(e)));
+  // A side file (x.dump.sha256) follows its dump; a partial dump (x.dump.partial) does not.
+  const dumpOf = (e: Entry) => (isPartial(e) ? e.name : e.name.replace(/(\.dump)\..*$/, "$1"));
+  const kept = (e: Entry) => (e.dir ? e === newestFiles : newestDump !== undefined && dumpOf(e) === newestDump.name);
+  return entries.filter((e) => isBackup(e) && !kept(e) && e.mtime.getTime() < (isPartial(e) ? partialCutoff : cutoff));
 }
 
 function main() {
@@ -31,7 +42,8 @@ function main() {
   const entries: Entry[] = readdirSync(dir).map((name) => {
     const full = path.join(dir, name);
     const st = statSync(full);
-    return { name, full, mtime: st.mtime, dir: st.isDirectory() };
+    const isDir = st.isDirectory();
+    return { name, full, mtime: st.mtime, dir: isDir, verified: isDir && existsSync(path.join(full, "manifest.json.sha256")) };
   });
   const expired = expiredBackups(entries, new Date(), BACKUP_RETENTION_DAYS);
   if (expired.length === 0) {
