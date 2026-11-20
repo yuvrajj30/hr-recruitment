@@ -62,6 +62,11 @@ enum LoginTokenPurpose {
   VERIFY_EMAIL
 }
 
+enum EmployeeStatus {
+  ACTIVE
+  EXITED
+}
+
 enum EmploymentType {
   INTERNSHIP
   FULL_TIME
@@ -306,6 +311,9 @@ model Organization {
   members                OrganizationMember[]
   sessions               Session[]
   departments            Department[]
+  outlets                Outlet[]
+  designations           Designation[]
+  employees              Employee[]
   jobs                   JobOpening[]
   formTemplates          FormTemplate[]
   candidates             OrganizationCandidate[]
@@ -333,31 +341,32 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships            OrganizationMember[]       @relation("MemberUser")
-  invitedMembers         OrganizationMember[]       @relation("MemberInvitedBy")
-  ownedOrganizations     Organization[]             @relation("OrganizationOwner")
-  sessions               Session[]
-  jobsCreated            JobOpening[]               @relation("JobCreatedBy")
-  assignedApplications   Application[]              @relation("ApplicationRecruiter")
-  applicationsCreated    Application[]              @relation("ApplicationCreatedBy")
-  assignmentsReceived    ApplicationAssignment[]    @relation("AssignmentRecruiter")
-  assignmentsMade        ApplicationAssignment[]    @relation("AssignmentAssignedBy")
-  statusChanges          ApplicationStatusHistory[]
-  notes                  ApplicationNote[]
-  formsCreated           FormTemplate[]
-  formAssignmentsMade    FormAssignment[]
-  interviewsCreated      Interview[]                @relation("InterviewCreatedBy")
-  feedback               InterviewFeedback[]
-  decisions              HiringDecision[]
-  offersCreated          Offer[]
-  onboardingApprovals    OnboardingRecord[]         @relation("OnboardingApprover")
-  onboardingDocsVerified OnboardingDocument[]
-  notifications          Notification[]
-  auditLogs              AuditLog[]
-  apiClientsCreated      ApiClient[]
-  invitationsSent        StaffInvitation[]          @relation("InvitationInvitedBy")
-  invitationsAccepted    StaffInvitation[]          @relation("InvitationAcceptedUser")
-  invitationsRevoked     StaffInvitation[]          @relation("InvitationRevokedBy")
+  memberships               OrganizationMember[]       @relation("MemberUser")
+  invitedMembers            OrganizationMember[]       @relation("MemberInvitedBy")
+  employeeAssignmentChanges EmployeeAssignment[]
+  ownedOrganizations        Organization[]             @relation("OrganizationOwner")
+  sessions                  Session[]
+  jobsCreated               JobOpening[]               @relation("JobCreatedBy")
+  assignedApplications      Application[]              @relation("ApplicationRecruiter")
+  applicationsCreated       Application[]              @relation("ApplicationCreatedBy")
+  assignmentsReceived       ApplicationAssignment[]    @relation("AssignmentRecruiter")
+  assignmentsMade           ApplicationAssignment[]    @relation("AssignmentAssignedBy")
+  statusChanges             ApplicationStatusHistory[]
+  notes                     ApplicationNote[]
+  formsCreated              FormTemplate[]
+  formAssignmentsMade       FormAssignment[]
+  interviewsCreated         Interview[]                @relation("InterviewCreatedBy")
+  feedback                  InterviewFeedback[]
+  decisions                 HiringDecision[]
+  offersCreated             Offer[]
+  onboardingApprovals       OnboardingRecord[]         @relation("OnboardingApprover")
+  onboardingDocsVerified    OnboardingDocument[]
+  notifications             Notification[]
+  auditLogs                 AuditLog[]
+  apiClientsCreated         ApiClient[]
+  invitationsSent           StaffInvitation[]          @relation("InvitationInvitedBy")
+  invitationsAccepted       StaffInvitation[]          @relation("InvitationAcceptedUser")
+  invitationsRevoked        StaffInvitation[]          @relation("InvitationRevokedBy")
 
   @@map("users")
 }
@@ -379,8 +388,11 @@ model OrganizationMember {
   roles                  OrganizationMemberRole[]
   assignedJobs           JobRecruiter[]
   interviewParticipation InterviewParticipant[]
+  // At most one (employees.member_id is unique in the database).
+  employees              Employee[]
 
   @@unique([organizationId, userId])
+  @@unique([organizationId, id])
   @@index([userId])
   @@map("organization_members")
 }
@@ -493,9 +505,11 @@ model Department {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   jobs         JobOpening[]
   onboarding   OnboardingRecord[]
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
 
   @@unique([organizationId, name])
   @@unique([organizationId, id])
@@ -1513,4 +1527,108 @@ model ApiClient {
 
   @@index([organizationId])
   @@map("api_clients")
+}
+
+// ----------------------------------------------------------------------------
+// EMPLOYEE MANAGEMENT  (organization-owned; migration 20261121000000_employee_management)
+// ----------------------------------------------------------------------------
+
+// A cafe location.
+model Outlet {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  address        String?
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("outlets")
+}
+
+// A job title (Barista, Shift Lead, Store Manager...).
+model Designation {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("designations")
+}
+
+// A person working for the organisation. Needs no login; memberId links a staff account (then that person can read
+// their own record). Never deleted: status EXITED with exitedOn.
+model Employee {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  employeeCode   String         @map("employee_code")
+  fullName       String         @map("full_name")
+  email          String?
+  phone          String?
+  employmentType EmploymentType @default(FULL_TIME) @map("employment_type")
+  status         EmployeeStatus @default(ACTIVE)
+  joinedOn       DateTime       @map("joined_on") @db.Date
+  exitedOn       DateTime?      @map("exited_on") @db.Date
+  outletId       String?        @map("outlet_id") @db.Uuid
+  departmentId   String?        @map("department_id") @db.Uuid
+  designationId  String?        @map("designation_id") @db.Uuid
+  managerId      String?        @map("manager_id") @db.Uuid
+  memberId       String?        @unique @map("member_id") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  outlet             Outlet?              @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  department         Department?          @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: Restrict)
+  designation        Designation?         @relation(fields: [organizationId, designationId], references: [organizationId, id], onDelete: Restrict)
+  manager            Employee?            @relation("EmployeeManager", fields: [organizationId, managerId], references: [organizationId, id], onDelete: Restrict)
+  reports            Employee[]           @relation("EmployeeManager")
+  // The database clears only member_id (column list); Prisma sees SET NULL.
+  member             OrganizationMember?  @relation(fields: [organizationId, memberId], references: [organizationId, id], onDelete: SetNull)
+  assignments        EmployeeAssignment[] @relation("AssignmentEmployee")
+  managedAssignments EmployeeAssignment[] @relation("AssignmentManager")
+
+  @@unique([organizationId, employeeCode])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([organizationId, managerId])
+  @@map("employees")
+}
+
+// Where an employee worked and for whom, over time. Written only by the database (trigger on employees).
+model EmployeeAssignment {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  outletId       String?   @map("outlet_id") @db.Uuid
+  departmentId   String?   @map("department_id") @db.Uuid
+  designationId  String?   @map("designation_id") @db.Uuid
+  managerId      String?   @map("manager_id") @db.Uuid
+  startsAt       DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime? @map("ends_at") @db.Timestamptz(6)
+  changedById    String?   @map("changed_by_id") @db.Uuid
+
+  employee    Employee     @relation("AssignmentEmployee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade)
+  outlet      Outlet?      @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  department  Department?  @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: Restrict)
+  designation Designation? @relation(fields: [organizationId, designationId], references: [organizationId, id], onDelete: Restrict)
+  manager     Employee?    @relation("AssignmentManager", fields: [organizationId, managerId], references: [organizationId, id], onDelete: Restrict)
+  changedBy   User?        @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, employeeId, startsAt])
+  @@map("employee_assignments")
 }

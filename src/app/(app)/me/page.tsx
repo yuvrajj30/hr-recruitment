@@ -1,7 +1,8 @@
-import { KeyRound, UserRound } from "lucide-react";
+import { BadgeCheck, KeyRound, UserRound } from "lucide-react";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { type ReactNode, Suspense } from "react";
+import { AssignmentHistory, formatDay } from "@/components/employees/employee-bits";
 import { NameForm, PasswordForm } from "@/components/users/self-forms";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -9,6 +10,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ROLE_LABELS } from "@/lib/auth/roles";
 import { getAuthRuntime } from "@/lib/auth/runtime";
 import { getCurrentAuth } from "@/lib/auth/server-session";
+import { getMyEmployee } from "@/lib/employees/employees";
+import { EMPLOYMENT_TYPE_LABELS } from "@/lib/employees/rules";
 import { getOrganizationSettings } from "@/lib/recruitment/jobs";
 import { formatDate, formatDateTime } from "@/lib/recruitment/labels";
 import { getMyAccount } from "@/lib/users/self";
@@ -30,7 +33,11 @@ async function MyAccountContent() {
   const auth = await getCurrentAuth();
   if (!auth) redirect("/login?next=%2Fme&reason=expired");
   const rt = getAuthRuntime();
-  const [me, { timezone }] = await Promise.all([getMyAccount(rt.db, auth), getOrganizationSettings(rt.db, auth).catch(() => ({ timezone: "UTC" }))]);
+  const [me, { timezone }, myEmployee] = await Promise.all([
+    getMyAccount(rt.db, auth),
+    getOrganizationSettings(rt.db, auth).catch(() => ({ timezone: "UTC" })),
+    auth.permissions.has("self:profile_read") ? getMyEmployee(rt.db, auth) : Promise.resolve(null),
+  ]);
   const canEdit = auth.permissions.has("self:profile_update");
 
   return (
@@ -54,6 +61,36 @@ async function MyAccountContent() {
             <Detail label="Last sign-in">{me.lastLoginAt ? formatDateTime(me.lastLoginAt, timezone) : "—"}</Detail>
           </dl>
           {canEdit && <NameForm name={me.name} />}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>My employee record</CardTitle>
+            <CardDescription>Your job details as HR holds them. Ask HR if anything is wrong.</CardDescription>
+          </div>
+          <BadgeCheck className="size-5 text-fg-subtle" aria-hidden />
+        </CardHeader>
+        <CardBody className="space-y-5">
+          {myEmployee ? (
+            <>
+              <dl className="grid gap-4 text-[13px] sm:grid-cols-2">
+                <Detail label="Employee code">{myEmployee.employeeCode}</Detail>
+                <Detail label="Designation">{myEmployee.designation ?? "—"}</Detail>
+                <Detail label="Department">{myEmployee.department ?? "—"}</Detail>
+                <Detail label="Outlet">{myEmployee.outlet ?? "—"}</Detail>
+                <Detail label="Joined on">{formatDay(myEmployee.joinedOn)}</Detail>
+                <Detail label="Employment type">{EMPLOYMENT_TYPE_LABELS[myEmployee.employmentType]}</Detail>
+              </dl>
+              <div>
+                <h3 className="mb-2 text-[13px] font-medium text-fg">Assignment history</h3>
+                <AssignmentHistory history={myEmployee.history} timezone={timezone} showChangedBy={false} showManager={false} />
+              </div>
+            </>
+          ) : (
+            <p className="text-[13px] text-fg-muted">HR has not linked an employee record to this account yet.</p>
+          )}
         </CardBody>
       </Card>
 

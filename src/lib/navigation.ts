@@ -36,7 +36,7 @@ type NavItemDefinition = {
 
 export const NAV_ITEMS: readonly NavItemDefinition[] = [
   { key: "dashboard", label: "Dashboard", href: "/dashboard", section: "workspace", status: "available", requiresAny: "everyone" },
-  { key: "employees", label: "Employees", href: "/employees", section: "workspace", status: "planned", requiresAny: ["employee:read"] },
+  { key: "employees", label: "Employees", href: "/employees", section: "workspace", status: "available", requiresAny: ["employee:read"] },
   { key: "recruitment", label: "Recruitment", href: "/recruitment", section: "workspace", status: "available", requiresAny: ["job:read", "application:read"] },
   { key: "interviews", label: "Interviews", href: "/interviews", section: "workspace", status: "available", requiresAny: ["interview:read"] },
   { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "planned", requiresAny: ["self:attendance_read", "attendance:read"] },

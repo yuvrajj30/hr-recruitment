@@ -13,16 +13,17 @@ describe("navigation", () => {
       "User and Role Management", "Integrations",
     ]);
   });
-  it("shows only released modules: today the dashboard, recruitment, interviews and user management, even for someone with every permission", () => {
+  it("shows only released modules: today the dashboard, employees, recruitment, interviews and user management, even for someone with every permission", () => {
     const everything = perms(...NAV_ITEMS.flatMap((i) => (i.requiresAny === "everyone" ? [] : [...i.requiresAny])));
-    expect(buildNavigation(everything).map((i) => i.key)).toEqual(["dashboard", "recruitment", "interviews", "users"]);
+    expect(buildNavigation(everything).map((i) => i.key)).toEqual(["dashboard", "employees", "recruitment", "interviews", "users"]);
     expect(buildNavigation(perms()).map((i) => i.key)).toEqual(["dashboard"]);
   });
   it("shows recruitment to people who can read jobs or applications, and to nobody else", () => {
     expect(buildNavigation(perms("job:read")).map((i) => i.key)).toEqual(["dashboard", "recruitment"]);
     expect(buildNavigation(perms("application:read")).map((i) => i.key)).toEqual(["dashboard", "recruitment"]);
     expect(buildNavigation(new Set(ROLE_PERMISSIONS.EMPLOYEE)).map((i) => i.key)).toEqual(["dashboard"]);
-    expect(buildNavigation(new Set(ROLE_PERMISSIONS.HR_MANAGER)).map((i) => i.key)).toEqual(["dashboard", "recruitment", "interviews", "users"]);
+    expect(buildNavigation(new Set(ROLE_PERMISSIONS.HR_MANAGER)).map((i) => i.key)).toEqual(["dashboard", "employees", "recruitment", "interviews", "users"]);
+    expect(buildNavigation(perms("employee:read")).map((i) => i.key)).toEqual(["dashboard", "employees"]);
     expect(buildNavigation(perms("interview:read")).map((i) => i.key)).toEqual(["dashboard", "interviews"]);
   });
   it("only ever asks for permissions that exist", () => {
