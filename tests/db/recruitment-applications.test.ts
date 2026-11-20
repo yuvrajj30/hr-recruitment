@@ -183,8 +183,8 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     expect(submitted[0]).toMatchObject({ actorUserId: null, entityType: "application", entityId: created.id, metadata: { reference: created.referenceNumber, knownCandidate: false, hasResume: true } });
     expect(w.entries).toEqual([]); // nothing went through the application's own audit writer
 
-    // The central profile got the education, experience and skills too.
-    const profile = await owner.candidateProfile.findUniqueOrThrow({ where: { email: input.email }, include: { educations: true, skills: true } });
+    // This organisation's profile of the person got the education, experience and skills too.
+    const profile = await owner.candidateProfile.findUniqueOrThrow({ where: { organizationId_email: { organizationId: w.org.id, email: input.email } }, include: { educations: true, skills: true } });
     expect(profile.educations).toHaveLength(1);
     expect(profile.skills.map((s) => s.name).sort()).toEqual(["billing", "espresso"]);
   });
@@ -408,7 +408,10 @@ describe.skipIf(!enabled)("applications and candidates (test database)", () => {
     await expect(moveApplicationStage(b.deps, b.hr, inA.id, "UNDER_REVIEW")).rejects.toMatchObject({ code: "not_found" });
     await expect(assignRecruiter(a.deps, a.hr, inA.id, b.rec1User.id)).rejects.toMatchObject({ code: "invalid" }); // another company's recruiter
 
-    // The same person applied to both companies: one shared profile, but each company sees only its own application.
+    // The same person applied to both companies: each company has its OWN profile (what that company was told)
+    // and sees only its own application.
+    expect(await owner.candidateProfile.count({ where: { email: input.email } })).toBe(2);
+    expect(inB.candidateWasKnown).toBe(false); // company B is not told that the person applied elsewhere
     const appB = await getApplication(db, b.hr, inB.id);
     const candidateInB = await getCandidate(db, b.hr, appB.candidate.id);
     expect(candidateInB.applications).toHaveLength(1);

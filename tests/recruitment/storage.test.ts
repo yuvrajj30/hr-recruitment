@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createLocalStorage, newStorageKey } from "@/lib/recruitment/storage";
+import { createLocalStorage, STORAGE_MARKER, newStorageKey } from "@/lib/recruitment/storage";
 
 describe("private file storage", () => {
   let root: string;
@@ -32,6 +32,7 @@ describe("private file storage", () => {
       await expect(storage.put(key, new Uint8Array([1])), key).rejects.toThrow("invalid storage key");
       await expect(storage.get(key), key).rejects.toThrow("invalid storage key");
     }
-    expect((await readdir(root)).filter((n) => n !== "resumes")).toEqual([]);
+    // Only the store's own marker (written with a valid upload) and the resumes folder.
+    expect((await readdir(root)).filter((n) => n !== "resumes" && n !== STORAGE_MARKER)).toEqual([]);
   });
 });

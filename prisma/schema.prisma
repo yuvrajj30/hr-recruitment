@@ -281,22 +281,26 @@ enum IntegrationStatus {
 // ----------------------------------------------------------------------------
 
 model Organization {
-  id                       String             @id @default(uuid(7)) @db.Uuid
-  slug                     String             @unique // public careers URL: /careers/<slug>
-  name                     String
-  status                   OrganizationStatus @default(ACTIVE)
-  ownerUserId              String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
-  timezone                 String             @default("UTC")
-  defaultCurrency          String             @default("INR") @map("default_currency")
+  id                               String             @id @default(uuid(7)) @db.Uuid
+  slug                             String             @unique // public careers URL: /careers/<slug>
+  name                             String
+  status                           OrganizationStatus @default(ACTIVE)
+  ownerUserId                      String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
+  timezone                         String             @default("UTC")
+  defaultCurrency                  String             @default("INR") @map("default_currency")
   // Super Admin's switch: may HR Managers invite Employee accounts? (on by default)
-  hrCanInviteEmployees     Boolean            @default(true) @map("hr_can_invite_employees")
+  hrCanInviteEmployees             Boolean            @default(true) @map("hr_can_invite_employees")
   // Candidate privacy notice: the name it is given in and the contact for privacy requests and complaints
   // (the notice is not shown until both are set), and how long candidates who were not hired are kept.
-  privacyNoticeName        String?            @map("privacy_notice_name")
-  privacyContactEmail      String?            @map("privacy_contact_email")
-  candidateRetentionMonths Int                @default(12) @map("candidate_retention_months")
-  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  privacyNoticeName                String?            @map("privacy_notice_name")
+  privacyContactEmail              String?            @map("privacy_contact_email")
+  candidateRetentionMonths         Int                @default(12) @map("candidate_retention_months")
+  // Set by a database trigger when the period is shortened (migration 20261120010000): for 14 days the retention
+  // job keeps using the longer previous period. Never written by the app.
+  candidateRetentionPreviousMonths Int?               @map("candidate_retention_previous_months")
+  candidateRetentionShortenedAt    DateTime?          @map("candidate_retention_shortened_at") @db.Timestamptz(6)
+  createdAt                        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   owner                  User                    @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   members                OrganizationMember[]
@@ -305,6 +309,8 @@ model Organization {
   jobs                   JobOpening[]
   formTemplates          FormTemplate[]
   candidates             OrganizationCandidate[]
+  candidateProfiles      CandidateProfile[]
+  candidateLoginTokens   CandidateLoginToken[]
   documents              CandidateDocument[]
   notifications          Notification[]
   auditLogs              AuditLog[]
@@ -565,9 +571,12 @@ model JobRecruiter {
 // organization_candidates row, so companies cannot see each other's candidates.
 // ----------------------------------------------------------------------------
 
+// A candidate as ONE organisation knows them (migration 20261118020000_candidate_profiles_per_organization):
+// the same email in another organisation is a separate profile, and nothing is shared between organisations.
 model CandidateProfile {
   id              String    @id @default(uuid(7)) @db.Uuid
-  email           String    @unique // normalized: trimmed + lower-case
+  organizationId  String    @map("organization_id") @db.Uuid
+  email           String // normalized: trimmed + lower-case; unique per organisation
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
   fullName        String    @map("full_name")
   phone           String?
@@ -586,13 +595,17 @@ model CandidateProfile {
   organizationRecords OrganizationCandidate[]
   account             CandidateAccount?
   loginTokens         CandidateLoginToken[]
+  organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
+  @@unique([organizationId, email])
+  @@unique([organizationId, id])
   @@index([fullName])
   @@map("candidate_profiles")
 }
 
 model CandidateEducation {
   id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
   candidateId    String   @map("candidate_id") @db.Uuid
   institution    String
   course         String?
@@ -601,39 +614,42 @@ model CandidateEducation {
   grade          String?
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
-  @@index([candidateId])
+  @@index([organizationId, candidateId])
   @@map("candidate_educations")
 }
 
 model CandidateExperience {
-  id          String    @id @default(uuid(7)) @db.Uuid
-  candidateId String    @map("candidate_id") @db.Uuid
-  company     String
-  title       String
-  startDate   DateTime? @map("start_date") @db.Date
-  endDate     DateTime? @map("end_date") @db.Date
-  isCurrent   Boolean   @default(false) @map("is_current")
-  description String?
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  candidateId    String    @map("candidate_id") @db.Uuid
+  company        String
+  title          String
+  startDate      DateTime? @map("start_date") @db.Date
+  endDate        DateTime? @map("end_date") @db.Date
+  isCurrent      Boolean   @default(false) @map("is_current")
+  description    String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
-  @@index([candidateId])
+  @@index([organizationId, candidateId])
   @@map("candidate_experiences")
 }
 
 model CandidateSkill {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  candidateId String   @map("candidate_id") @db.Uuid
-  name        String // stored normalized (lower-case) for search
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  candidateId    String   @map("candidate_id") @db.Uuid
+  name           String // stored normalized (lower-case) for search
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
   @@unique([candidateId, name])
   @@index([name])
+  @@index([organizationId, candidateId])
   @@map("candidate_skills")
 }
 
@@ -656,15 +672,15 @@ model OrganizationCandidate {
   updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  candidate    CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  candidate    CandidateProfile      @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Restrict)
   employeeLink ExternalEmployeeLink? @relation(fields: [organizationId, employeeLinkId], references: [organizationId, id], onDelete: NoAction)
   applications Application[]
 
   @@unique([organizationId, candidateId])
   @@unique([organizationId, id])
   @@unique([organizationId, employeeLinkId])
+  @@unique([candidateId]) // a profile belongs to exactly one organisation record
   @@index([organizationId, removedAt])
-  @@index([candidateId])
   @@index([organizationId, candidateType])
   @@map("organization_candidates")
 }
@@ -676,7 +692,7 @@ model OrganizationCandidate {
 model CandidateDocument {
   id             String       @id @default(uuid(7)) @db.Uuid
   candidateId    String       @map("candidate_id") @db.Uuid
-  organizationId String?      @map("organization_id") @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   applicationId  String?      @map("application_id") @db.Uuid
   kind           DocumentKind
   originalName   String       @map("original_name")
@@ -686,16 +702,22 @@ model CandidateDocument {
   sha256         String
   uploadedAt     DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
   deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz(6)
+  // Set once storage has deleted the file of a removed document; until then the retention job retries
+  // (migration 20261120000000; the partial index for that lookup lives only in the migration).
+  fileRemovedAt  DateTime?    @map("file_removed_at") @db.Timestamptz(6)
 
-  candidate      CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
-  organization   Organization?         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  candidate      CandidateProfile      @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // Prisma warns that SetNull meets a required organizationId: the database clears only application_id (PostgreSQL
+  // 15+ column list, migration 20261118020100_candidate_document_keeps_organization), so the warning is expected.
   application    Application?          @relation("ApplicationOwnedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: SetNull)
   sharedWith     ApplicationDocument[]
   formAnswers    FormAnswer[]
   offerLetterFor Offer[]
   onboardingDocs OnboardingDocument[]
 
-  @@index([candidateId, kind])
+  @@unique([organizationId, id])
+  @@index([organizationId, candidateId, kind])
   @@index([organizationId, applicationId])
   @@map("candidate_documents")
 }
@@ -708,7 +730,7 @@ model ApplicationDocument {
   sharedAt       DateTime @default(now()) @map("shared_at") @db.Timestamptz(6)
 
   application Application       @relation("ApplicationSharedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
-  document    CandidateDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document    CandidateDocument @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Cascade)
 
   @@id([applicationId, documentId])
   @@index([organizationId, applicationId])
@@ -752,23 +774,42 @@ model CandidateSession {
   @@map("candidate_sessions")
 }
 
+// Public application rate limits, shared by every app server (migration 20261120000000). Only keyed hashes of the
+// visitor address and the email; rows are deleted within an hour. Read and written only by the database function
+// app_public_apply_allowed (the app account has no access to the table).
+model PublicApplyRateEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bucket    String
+  keyHash   String   @map("key_hash")
+  createdAt DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@index([bucket, keyHash, createdAt])
+  @@index([createdAt])
+  @@map("public_apply_rate_events")
+}
+
 // One-time sign-in codes / links. Only a hash of the token is stored.
 model CandidateLoginToken {
-  id            String            @id @default(uuid(7)) @db.Uuid
-  email         String
-  purpose       LoginTokenPurpose
-  tokenHash     String            @unique @map("token_hash")
-  expiresAt     DateTime          @map("expires_at") @db.Timestamptz(6)
-  usedAt        DateTime?         @map("used_at") @db.Timestamptz(6)
-  requestedIp   String?           @map("requested_ip")
-  candidateId   String?           @map("candidate_id") @db.Uuid
-  applicationId String?           @map("application_id") @db.Uuid
-  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String            @id @default(uuid(7)) @db.Uuid
+  email          String
+  purpose        LoginTokenPurpose
+  tokenHash      String            @unique @map("token_hash")
+  expiresAt      DateTime          @map("expires_at") @db.Timestamptz(6)
+  usedAt         DateTime?         @map("used_at") @db.Timestamptz(6)
+  requestedIp    String?           @map("requested_ip")
+  // Required whenever the link names a candidate or an application (CHECK candidate_login_tokens_link_needs_org).
+  organizationId String?           @map("organization_id") @db.Uuid
+  candidateId    String?           @map("candidate_id") @db.Uuid
+  applicationId  String?           @map("application_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate   CandidateProfile? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
-  application Application?      @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  organization Organization?     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // The database clears only candidate_id / application_id (column list, migration 20261118020200).
+  candidate    CandidateProfile? @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: SetNull)
+  application  Application?      @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: SetNull)
 
   @@index([email, createdAt]) // used for rate limiting
+  @@index([organizationId])
   @@index([expiresAt])
   @@map("candidate_login_tokens")
 }
@@ -1049,7 +1090,8 @@ model FormAnswer {
 
   submission FormSubmission     @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
   field      FormField?         @relation(fields: [fieldId], references: [id], onDelete: SetNull)
-  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  // The database clears only document_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  document   CandidateDocument? @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: SetNull)
 
   @@index([organizationId, submissionId])
   @@index([fieldId])
@@ -1179,7 +1221,8 @@ model Offer {
   updatedAt            DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   application Application        @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Restrict)
-  offerLetter CandidateDocument? @relation(fields: [offerLetterId], references: [id], onDelete: SetNull)
+  // The database clears only offer_letter_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  offerLetter CandidateDocument? @relation(fields: [organizationId, offerLetterId], references: [organizationId, id], onDelete: SetNull)
   createdBy   User               @relation(fields: [createdById], references: [id], onDelete: Restrict)
   onboarding  OnboardingRecord?
 
@@ -1255,7 +1298,8 @@ model OnboardingDocument {
   updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   onboarding OnboardingRecord   @relation(fields: [organizationId, onboardingId], references: [organizationId, id], onDelete: Cascade)
-  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  // The database clears only document_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  document   CandidateDocument? @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: SetNull)
   verifiedBy User?              @relation(fields: [verifiedById], references: [id], onDelete: SetNull)
 
   @@index([organizationId, onboardingId, status])

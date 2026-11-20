@@ -13,7 +13,9 @@
     "db:verify-extra": "tsx scripts/verify-db-extra.ts",
     "auth:cleanup": "tsx --conditions=react-server scripts/auth-cleanup.ts",
     "auth:set-password": "tsx --conditions=react-server scripts/set-password.ts",
-    "auth:list-users": "tsx scripts/list-users.ts"
+    "auth:list-users": "tsx scripts/list-users.ts",
+    "privacy:retention": "tsx --conditions=react-server scripts/privacy-retention.ts",
+    "backup:expiry": "tsx scripts/backup-expiry.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

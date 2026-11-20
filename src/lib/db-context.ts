@@ -15,6 +15,8 @@ import type { Db } from "@/lib/db";
 //             session up (it stores only the token's fingerprint) and takes the user and organisation from it.
 //             A user id or organisation stated by the application is not read at all, so it cannot be forged.
 //   - public: `app.mode` = 'public_apply' and `app.org_id` = the job's organisation (anonymous by nature).
+//   - maintenance: `app.mode` = 'maintenance', no person and no organisation. No table is readable in this mode;
+//             it can only call the few housekeeping functions that check for it (the retention job).
 //   - a single query            -> a small two-step transaction: [set_config, the query]
 //   - db.$transaction(fn)       -> one transaction: set_config first, then everything fn does
 //   - db.$transaction([a, b])   -> one transaction: [set_config, a, b]
@@ -22,7 +24,8 @@ import type { Db } from "@/lib/db";
 
 export type DbContext =
   | { mode: "staff"; sessionToken: string }
-  | { mode: "public_apply"; organizationId: string | null };
+  | { mode: "public_apply"; organizationId: string | null }
+  | { mode: "maintenance" };
 
 type Scoped = { base: Db; context: DbContext };
 const SCOPES = new WeakMap<object, Scoped>();
@@ -101,4 +104,9 @@ export function staffDb(db: Db, ctx: object): Db {
 // known, narrow it to that job's organisation to submit the application.
 export function publicApplyDb(db: Db, organizationId: string | null = null): Db {
   return withDbContext(db, { mode: "public_apply", organizationId });
+}
+
+// Scheduled housekeeping with no person behind it (see src/lib/recruitment/retention.ts).
+export function maintenanceDb(db: Db): Db {
+  return withDbContext(db, { mode: "maintenance" });
 }

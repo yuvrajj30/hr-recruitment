@@ -63,9 +63,9 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
     f.jobADraft = await job(f.orgA, "draft", "DRAFT", f.sa);
     f.jobB = await job(f.orgB, "published-b", "PUBLISHED", f.hrB);
 
-    const candidate = async (email: string) => (await one(`INSERT INTO candidate_profiles (id, email, full_name, updated_at) VALUES (gen_random_uuid(), $1, $1, now()) RETURNING id`, [email])).id;
-    f.candA = await candidate(`rls-cand-a-${tag}@example.test`);
-    f.candBOnly = await candidate(`rls-cand-b-${tag}@example.test`);
+    const candidate = async (o: string, email: string) => (await one(`INSERT INTO candidate_profiles (id, organization_id, email, full_name, updated_at) VALUES (gen_random_uuid(), $1, $2, $2, now()) RETURNING id`, [o, email])).id;
+    f.candA = await candidate(f.orgA, `rls-cand-a-${tag}@example.test`);
+    f.candBOnly = await candidate(f.orgB, `rls-cand-b-${tag}@example.test`);
     f.ocA = (await one(`INSERT INTO organization_candidates (id, organization_id, candidate_id, updated_at) VALUES (gen_random_uuid(), $1, $2, now()) RETURNING id`, [f.orgA, f.candA])).id;
     f.ocB = (await one(`INSERT INTO organization_candidates (id, organization_id, candidate_id, updated_at) VALUES (gen_random_uuid(), $1, $2, now()) RETURNING id`, [f.orgB, f.candBOnly])).id;
     const app = async (o: string, oc: string, j: string, ref: string) =>
@@ -92,7 +92,7 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
       await owner.query(`DELETE FROM candidate_documents WHERE organization_id = ANY($1)`, [orgs]);
       await owner.query(`DELETE FROM applications WHERE organization_id = ANY($1)`, [orgs]);
       await owner.query(`DELETE FROM organization_candidates WHERE organization_id = ANY($1)`, [orgs]);
-      await owner.query(`DELETE FROM candidate_profiles WHERE email LIKE $1`, [`rls-%-${tag}@example.test`]);
+      await owner.query(`DELETE FROM candidate_profiles WHERE organization_id = ANY($1) OR email LIKE $2`, [orgs, `rls-%-${tag}@example.test`]);
       await owner.query(`DELETE FROM job_openings WHERE organization_id = ANY($1)`, [orgs]);
       await owner.query(`DELETE FROM departments WHERE organization_id = ANY($1)`, [orgs]);
       await owner.query(`DELETE FROM organization_members WHERE organization_id = ANY($1)`, [orgs]);
@@ -338,18 +338,23 @@ describe.skipIf(!enabled)("row-level security, directly in PostgreSQL (test data
     }
   });
 
-  it("matches a known email to its profile without revealing it, never changes it, and only for HR staff directly", async () => {
+  it("matches an email only within the organisation, never changes a profile, and only for HR staff directly", async () => {
     const pubA: Who = { mode: "public_apply", org: f.orgA };
     // The public form cannot call the profile function on its own any more (only through the submission).
     expect((await as(pubA, `SELECT * FROM app_find_or_create_candidate_profile($1, 'Someone Else', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-b-${tag}@example.test`])).error).toMatch(/not allowed/);
-    expect((await as(pubA, `SELECT * FROM app_candidate_profile_internal($1, 'Someone Else', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-b-${tag}@example.test`])).error).toMatch(/permission denied/);
+    expect((await as(pubA, `SELECT * FROM app_candidate_profile_internal($1, $2, 'Someone Else', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, [f.orgA, `rls-cand-b-${tag}@example.test`])).error).toMatch(/permission denied/);
     expect((await as(EMP(), `SELECT * FROM app_find_or_create_candidate_profile($1, 'Someone Else', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-b-${tag}@example.test`])).error).toMatch(/not allowed/);
-    // HR staff (entering an application by hand): a person known to ANOTHER organisation is matched by email.
-    const known = await as<{ id: string; created: boolean }>(HR(), `SELECT * FROM app_find_or_create_candidate_profile($1, 'Someone Else', '+911111111111', NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-b-${tag}@example.test`]);
-    expect(known.rows).toEqual([{ id: f.candBOnly, created: false }]);
-    // Only the id came back; the profile itself is still unreadable from here, and its name is unchanged.
+    // HR staff (entering an application by hand): an email that only ANOTHER organisation knows is NOT matched.
+    // Organisation A gets its own new profile; organisation B's profile is neither returned nor changed.
+    const fresh = await as<{ id: string; created: boolean }>(HR(), `SELECT * FROM app_find_or_create_candidate_profile($1, 'Someone Else', '+911111111111', NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-b-${tag}@example.test`]);
+    expect(fresh.rows).toHaveLength(1);
+    expect(fresh.rows[0]).toMatchObject({ created: true });
+    expect(fresh.rows[0]!.id).not.toBe(f.candBOnly);
     expect(await count(HR(), "candidate_profiles", `id = '${f.candBOnly}'`)).toBe(0);
     expect((await owner.query(`SELECT full_name FROM candidate_profiles WHERE id = $1`, [f.candBOnly])).rows[0].full_name).toBe(`rls-cand-b-${tag}@example.test`);
+    // Within organisation A, the same email (any capitals and spaces normalised by the app) finds A's own profile.
+    const again = await as<{ id: string; created: boolean }>(HR(), `SELECT * FROM app_find_or_create_candidate_profile($1, 'Somebody', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, [`rls-cand-a-${tag}@example.test`]);
+    expect(again.rows).toEqual([{ id: f.candA, created: false }]);
     expect((await as(HR(), `SELECT * FROM app_find_or_create_candidate_profile('Not.Lower@Example.test', 'X', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`)).error).toMatch(/normalised/);
   });
 });

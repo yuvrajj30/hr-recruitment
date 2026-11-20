@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allowPublicApplication, checkFormToken, createRateLimiter, issueFormToken } from "@/lib/recruitment/abuse";
+import { applyRateKeys, checkFormToken, createRateLimiter, issueFormToken } from "@/lib/recruitment/abuse";
 import {
   formDataToApplicationFields,
   looksLikeReference,
@@ -161,12 +161,16 @@ describe("public form protection", () => {
     expect(limiter.hit("b", later(2))).toBe(true);
     expect(limiter.hit("a", later(61))).toBe(true);
   });
-  it("limits by address and by email together", () => {
-    const limiters = { address: createRateLimiter(2, 60_000), unknown: createRateLimiter(3, 60_000), email: createRateLimiter(1, 60_000) };
-    expect(allowPublicApplication(limiters, { ipAddress: "203.0.113.5", email: "a@x.test" }, t0)).toBe(true);
-    expect(allowPublicApplication(limiters, { ipAddress: "203.0.113.5", email: "a@x.test" }, t0)).toBe(false); // same email
-    expect(allowPublicApplication(limiters, { ipAddress: "203.0.113.5", email: "b@x.test" }, t0)).toBe(false); // address used up
-    expect(allowPublicApplication(limiters, { ipAddress: null, email: "c@x.test" }, t0)).toBe(true);
+  it("counts public applications only by keyed hashes, never the address or email itself", () => {
+    const k = applyRateKeys(secret, { ipAddress: "203.0.113.5", email: "A@X.test" });
+    expect(k.addressHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(k.emailHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(k)).not.toMatch(/203.0.113|x.test/i);
+    expect(applyRateKeys(secret, { ipAddress: "203.0.113.5", email: "a@x.test" }).emailHash).toBe(k.emailHash); // case-insensitive
+    expect(applyRateKeys("y".repeat(32), { ipAddress: "203.0.113.5", email: "a@x.test" }).emailHash).not.toBe(k.emailHash); // keyed
+    expect(applyRateKeys(secret, { ipAddress: null, email: "a@x.test" }).addressHash).toBeNull();
+    // An address and an email never share a key.
+    expect(applyRateKeys(secret, { ipAddress: "a@x.test", email: "a@x.test" }).addressHash).not.toBe(k.emailHash);
   });
   it("does not grow without limit", () => {
     const limiter = createRateLimiter(1, 60_000, 3);

@@ -26,8 +26,10 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   app_public_organization: true, app_find_or_create_candidate_profile: true, app_submit_public_application: true,
   app_sign_in: true, app_my_password_matches: true, app_change_my_password: true, app_invitation_lookup: true, app_accept_invitation: true,
   app_remove_candidate: true,
+  // shared public-application limit and the retention job (20261120000000_shared_limits_and_retention)
+  app_public_apply_allowed: true, app_remove_due_candidates: true, app_pending_file_removals: true, app_confirm_file_removed: true,
   // internal only
-  app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
+  app_remove_candidate_core: false, guard_application_candidate_removed: false, app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,
   guard_interview_changes: false, guard_interview_participants: false, guard_interview_feedback: false, guard_hiring_decisions: false, interview_candidate_removed: false,
 };

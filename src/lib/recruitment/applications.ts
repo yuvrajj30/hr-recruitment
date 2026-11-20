@@ -119,7 +119,8 @@ export async function applyPublicly(
         if (msg.includes("duplicate_application")) throw duplicate("An application for this job has already been received from this email address.");
         if (msg.includes("job_closed")) throw closed("This job is no longer accepting applications.");
         if (msg.includes("age_not_confirmed")) throw invalid("Please confirm your age.", { ageConfirmed: "Please confirm your age." });
-        if (isRawUniqueViolation(error) && attempt < 3) continue;
+        // A removal of the same person committed during this application: simply run it again.
+        if ((isRawUniqueViolation(error) || msg.includes("try_again")) && attempt < 3) continue;
         throw error;
       }
     }
@@ -172,10 +173,10 @@ async function saveApplication(
     for (let attempt = 0; ; attempt++) {
       try {
         return await db.$transaction(async (tx) => {
-          // ONE profile per person, matched by the normalised email. Profiles are shared by all
-          // organisations, so this goes through one narrow database function that finds or creates the
-          // profile and returns only its id: nobody (the public form included) gets to read profiles of
-          // people who never applied to their own organisation.
+          // ONE profile per person IN THIS ORGANISATION, matched by the normalised email (another
+          // organisation's profile of the same email is separate and never looked at). It goes through one
+          // narrow database function that finds or creates the profile in the caller's own organisation
+          // and returns only its id.
           // An existing profile is NOT overwritten: nobody has proved they own that email address,
           // so what they typed is kept with this application only (the snapshot below).
           const [match] = await tx.$queryRaw<{ id: string; created: boolean }[]>`

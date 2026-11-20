@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Private file storage for candidate documents.
@@ -16,7 +16,15 @@ export interface FileStorage {
   put(key: string, bytes: Uint8Array): Promise<void>;
   get(key: string): Promise<Uint8Array | null>;
   remove(key: string): Promise<void>;
+  // Proves this storage is the app's real file store before anything is deleted or confirmed as deleted (the
+  // retention job): a wrong folder would make every deletion "succeed" on files that are not there. Returns the
+  // resolved location for the job's log. Optional: in-memory stores used by tests need no check.
+  verifyRoot?(): Promise<string>;
 }
+
+// Written into the storage folder with the first upload; the retention job refuses to delete files in a folder
+// that has neither this marker nor a resumes/ folder.
+export const STORAGE_MARKER = ".cafeos-storage";
 
 // "resumes/2026/0193c1e2-....": a folder per year, then a random id. No extension, no original name.
 export function newStorageKey(folder: "resumes" | "documents", now: Date): string {
@@ -38,6 +46,9 @@ export function createLocalStorage(rootDir: string): FileStorage {
       const full = resolve(key);
       await mkdir(path.dirname(full), { recursive: true });
       await writeFile(full, bytes, { flag: "wx", mode: 0o600 }); // never overwrites an existing file
+      await writeFile(path.join(root, STORAGE_MARKER), "CafeOS private file storage\n", { flag: "wx" }).catch((e: { code?: string }) => {
+        if (e.code !== "EEXIST") throw e;
+      });
     },
     async get(key) {
       try {
@@ -49,6 +60,14 @@ export function createLocalStorage(rootDir: string): FileStorage {
     },
     async remove(key) {
       await rm(resolve(key), { force: true });
+    },
+    async verifyRoot() {
+      const isThere = async (p: string, dir: boolean) => stat(p).then((st) => (dir ? st.isDirectory() : st.isFile()), () => false);
+      if (!(await isThere(root, true))) throw new Error(`storage folder not found: ${root}`);
+      if (!(await isThere(path.join(root, STORAGE_MARKER), false)) && !(await isThere(path.join(root, "resumes"), true))) {
+        throw new Error(`not the app's file storage (no ${STORAGE_MARKER} or resumes/ folder): ${root}`);
+      }
+      return root;
     },
   };
 }

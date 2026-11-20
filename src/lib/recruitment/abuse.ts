@@ -1,13 +1,16 @@
 import "server-only";
 import { createHmac } from "node:crypto";
-import { safeEqual } from "@/lib/security/tokens";
+import type { Db } from "@/lib/db";
+import { publicApplyDb } from "@/lib/db-context";
+import { hashIdentifier, safeEqual } from "@/lib/security/tokens";
 
 // Protection for the public application form, which anyone on the internet can reach.
 //
 //   1. A hidden "trap" field that people never see but simple bots fill in.
 //   2. A signed time stamp: the form must have been open for a few seconds (bots submit instantly)
 //      and not for longer than a day. It is tied to the job, so it cannot be reused elsewhere.
-//   3. Rate limits per visitor address and per email address.
+//   3. Rate limits per visitor address and per email address, counted in the database so that every app
+//      server shares one count (only keyed hashes are stored, never the address or the email).
 //
 // These stop casual spam without any outside service. They are not a CAPTCHA.
 
@@ -37,9 +40,9 @@ export function checkFormToken(secret: string, jobId: string, token: unknown, no
   return "ok";
 }
 
-// A small in-memory limiter: at most `limit` events per `windowMs` for each key.
-// It lives in this server process, which is enough for one server; several servers behind a load
-// balancer would each count separately (a shared store can replace it then).
+// A small in-memory limiter: at most `limit` events per `windowMs` for each key, in this server process only.
+// Used for signed-in or token-holding requests (password change, invitation acceptance); the public application
+// form uses the shared database limit below instead.
 export type RateLimiter = { hit(key: string, now: Date): boolean; size(): number };
 
 export function createRateLimiter(limit: number, windowMs: number, maxKeys = 10_000): RateLimiter {
@@ -62,26 +65,33 @@ export function createRateLimiter(limit: number, windowMs: number, maxKeys = 10_
   };
 }
 
+// Enforced by the database function app_public_apply_allowed (migration 20261120000000), which holds the same
+// numbers; kept here for reference and tests.
 export const PUBLIC_APPLY_LIMITS = {
   perAddress: { limit: 5, windowMs: 10 * 60_000 }, // 5 submissions per 10 minutes from one address
   unknownAddress: { limit: 30, windowMs: 10 * 60_000 }, // shared bucket when the address is not known
   perEmail: { limit: 5, windowMs: 60 * 60_000 }, // 5 submissions per hour for one email
 } as const;
 
-type Limiters = { address: RateLimiter; unknown: RateLimiter; email: RateLimiter };
-const globalForLimits = globalThis as unknown as { __hrApplyLimits?: Limiters };
-
-export function getApplyLimiters(): Limiters {
-  globalForLimits.__hrApplyLimits ??= {
-    address: createRateLimiter(PUBLIC_APPLY_LIMITS.perAddress.limit, PUBLIC_APPLY_LIMITS.perAddress.windowMs),
-    unknown: createRateLimiter(PUBLIC_APPLY_LIMITS.unknownAddress.limit, PUBLIC_APPLY_LIMITS.unknownAddress.windowMs),
-    email: createRateLimiter(PUBLIC_APPLY_LIMITS.perEmail.limit, PUBLIC_APPLY_LIMITS.perEmail.windowMs),
+// Keyed hashes (HMAC with the app secret): the database can count repeats without ever holding the address or
+// the email. Different prefixes keep an address and an email from ever sharing a key.
+export function applyRateKeys(secret: string, input: { ipAddress: string | null; email: string }): { addressHash: string | null; emailHash: string } {
+  return {
+    addressHash: input.ipAddress ? hashIdentifier(`apply-address:${input.ipAddress}`, secret) : null,
+    emailHash: hashIdentifier(`apply-email:${input.email}`, secret),
   };
-  return globalForLimits.__hrApplyLimits;
 }
 
-export function allowPublicApplication(limiters: Limiters, input: { ipAddress: string | null; email: string }, now: Date): boolean {
-  const addressOk = input.ipAddress ? limiters.address.hit(input.ipAddress, now) : limiters.unknown.hit("unknown", now);
-  if (!addressOk) return false;
-  return limiters.email.hit(input.email, now);
+// TRUE (and counted) when this submission is within the limits, across all app servers. The organisation is the
+// one the application goes to: the database keeps the "address unknown" and per-email counts per organisation (it
+// takes the organisation from this narrowed session, not from a value the app passes), so traffic against one
+// company cannot block applications to another.
+export async function allowPublicApplication(
+  db: Db,
+  secret: string,
+  input: { organizationId: string; ipAddress: string | null; email: string },
+): Promise<boolean> {
+  const k = applyRateKeys(secret, input);
+  const [row] = await publicApplyDb(db, input.organizationId).$queryRaw<{ allowed: boolean }[]>`SELECT "app_public_apply_allowed"(${k.addressHash}, ${k.emailHash}) AS "allowed"`;
+  return row?.allowed === true;
 }

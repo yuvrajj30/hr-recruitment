@@ -7,7 +7,7 @@ import { staffDb } from "@/lib/db-context";
 import { logger } from "@/lib/security/logger";
 import type { AppDeps } from "./applications";
 import { invalid, notFound } from "./errors";
-import { REMOVABLE_STAGES, RETENTION_MONTHS } from "./privacy-rules";
+import { effectiveRetentionMonths, REMOVABLE_STAGES, RETENTION_MONTHS, RETENTION_SHORTENING_GRACE_DAYS, retentionCutoff } from "./privacy-rules";
 
 // Candidate privacy: the organisation's notice settings, the list of candidates due for removal, and
 // removing a candidate's personal data. The removal itself is ONE database function
@@ -83,24 +83,47 @@ export async function updatePrivacySettings(deps: Pick<AppDeps, "db" | "now" | "
 export type DueForRemoval = { id: string; name: string; email: string; applications: number; lastClosedAt: Date };
 
 // Candidates whose applications to this organisation are ALL finished without a hire, the last of them
-// longer ago than the organisation's retention period. Oldest first.
-export async function listDueForRemoval(rawDb: Db, ctx: AuthContext, now: Date): Promise<{ retentionMonths: number; cutoff: Date; items: DueForRemoval[] }> {
+// longer ago than the organisation's retention period. Oldest first; at most DUE_LIST_LIMIT are listed, and
+// `total` says how many are due in all. (The scheduled retention job, retention.ts, removes them all by itself
+// with the same rule in the database.)
+export const DUE_LIST_LIMIT = 500;
+// The same rule as the automatic job (app_remove_due_candidates): cutoff in UTC with the day clamped, and during the
+// grace after a shortening the longer previous period (graceUntil says until when).
+export async function listDueForRemoval(
+  rawDb: Db,
+  ctx: AuthContext,
+  now: Date,
+): Promise<{ retentionMonths: number; cutoff: Date; graceUntil: Date | null; items: DueForRemoval[]; total: number }> {
   requirePermission(ctx, "candidate:delete");
   const organizationId = requireOrganizationId(ctx);
   const db = staffDb(rawDb, ctx);
-  const org = await db.organization.findUnique({ where: { id: organizationId }, select: { candidateRetentionMonths: true } });
-  if (!org) throw notFound("The organisation");
-  const cutoff = new Date(now);
-  cutoff.setUTCMonth(cutoff.getUTCMonth() - org.candidateRetentionMonths);
-  const rows = await db.organizationCandidate.findMany({
-    where: {
-      organizationId,
-      removedAt: null,
-      applications: { some: {}, every: { stage: { in: [...REMOVABLE_STAGES] }, stageChangedAt: { lt: cutoff } } },
-    },
-    select: { id: true, candidate: { select: { fullName: true, email: true } }, applications: { select: { stageChangedAt: true } } },
-    take: 500,
+  const org = await db.organization.findUnique({
+    where: { id: organizationId },
+    select: { candidateRetentionMonths: true, candidateRetentionPreviousMonths: true, candidateRetentionShortenedAt: true },
   });
+  if (!org) throw notFound("The organisation");
+  const months = effectiveRetentionMonths(
+    { months: org.candidateRetentionMonths, previousMonths: org.candidateRetentionPreviousMonths, shortenedAt: org.candidateRetentionShortenedAt },
+    now,
+  );
+  const cutoff = retentionCutoff(now, months);
+  const graceUntil = months !== org.candidateRetentionMonths && org.candidateRetentionShortenedAt
+    ? new Date(org.candidateRetentionShortenedAt.getTime() + RETENTION_SHORTENING_GRACE_DAYS * 86_400_000)
+    : null;
+  const where = {
+    organizationId,
+    removedAt: null,
+    applications: { some: {}, every: { stage: { in: [...REMOVABLE_STAGES] }, stageChangedAt: { lt: cutoff } } },
+  };
+  const [rows, total] = await db.$transaction(async (tx) => [
+    await tx.organizationCandidate.findMany({
+      where,
+      select: { id: true, candidate: { select: { fullName: true, email: true } }, applications: { select: { stageChangedAt: true } } },
+      orderBy: { firstSeenAt: "asc" },
+      take: DUE_LIST_LIMIT,
+    }),
+    await tx.organizationCandidate.count({ where }),
+  ] as const);
   const items = rows
     .map((r) => ({
       id: r.id,
@@ -110,7 +133,7 @@ export async function listDueForRemoval(rawDb: Db, ctx: AuthContext, now: Date):
       lastClosedAt: new Date(Math.max(...r.applications.map((a) => a.stageChangedAt.getTime()))),
     }))
     .sort((a, b) => a.lastClosedAt.getTime() - b.lastClosedAt.getTime());
-  return { retentionMonths: org.candidateRetentionMonths, cutoff, items };
+  return { retentionMonths: months, cutoff, graceUntil, items, total };
 }
 
 export type RemovalResult = { applicationsKept: number; filesDeleted: number; filesNotDeleted: number };

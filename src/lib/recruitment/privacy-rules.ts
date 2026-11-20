@@ -22,3 +22,26 @@ export const REMOVABLE_STAGES = ["REJECTED", "WITHDRAWN", "OFFER_DECLINED"] as c
 export type ApplicationConfirmations = { ageConfirmed: boolean };
 
 export const privacyNoticePath = (organizationSlug: string) => `/careers/${organizationSlug}/privacy`;
+
+// The retention cutoff: `months` calendar months before `now`, in UTC, with the day clamped to the end of a shorter
+// month (31 March minus 1 month is 28/29 February), exactly as the database's retention job computes it.
+export function retentionCutoff(now: Date, months: number): Date {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth() - months;
+  const targetYear = y + Math.floor(m / 12);
+  const targetMonth = ((m % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(targetYear, targetMonth, Math.min(now.getUTCDate(), lastDay),
+    now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds(), now.getUTCMilliseconds()));
+}
+
+// For RETENTION_SHORTENING_GRACE_DAYS after an organisation shortens its retention period, the automatic job keeps
+// using the longer previous period (the database maintains both values), so a typo cannot remove people overnight.
+export const RETENTION_SHORTENING_GRACE_DAYS = 14;
+export function effectiveRetentionMonths(
+  org: { months: number; previousMonths: number | null; shortenedAt: Date | null },
+  now: Date,
+): number {
+  const inGrace = org.shortenedAt !== null && org.shortenedAt.getTime() > now.getTime() - RETENTION_SHORTENING_GRACE_DAYS * 86_400_000;
+  return inGrace ? Math.max(org.months, org.previousMonths ?? 0) : org.months;
+}

@@ -18,6 +18,8 @@ const eslintConfig = defineConfig([
     "scripts/m2-ops/**",
     // One-off timestamp correction tool (plain Node script, not part of the app).
     "scripts/tz-ops/**",
+    // Release and scheduled-job helpers for the real database (plain Node / PowerShell, not part of the app).
+    "scripts/ops/**",
   ]),
   {
     // Tests and database check scripts talk to raw database drivers where "any" is common.

@@ -120,7 +120,7 @@ describe.skipIf(!enabled)("interviews, feedback and decisions (test database)", 
       permissions: new Set(ROLE_PERMISSIONS[key]),
     });
     const application = async (stage: "SHORTLISTED" | "APPLIED" = "SHORTLISTED") => {
-      const profile = await owner.candidateProfile.create({ data: { email: `cand-${rnd()}@${DOMAIN}`, fullName: "Kavya Rao" } });
+      const profile = await owner.candidateProfile.create({ data: { organizationId: org.id, email: `cand-${rnd()}@${DOMAIN}`, fullName: "Kavya Rao" } });
       const oc = await owner.organizationCandidate.create({ data: { organizationId: org.id, candidateId: profile.id, firstSeenAt: new Date() } });
       return owner.application.create({
         data: { organizationId: org.id, referenceNumber: `APP-T-${rnd().toUpperCase()}`, organizationCandidateId: oc.id, jobId: job.id, stage, stageChangedAt: new Date(), appliedAt: new Date(), ageConfirmedAt: new Date(), consentAcceptedAt: new Date(), privacyNoticeVersion: "test" },

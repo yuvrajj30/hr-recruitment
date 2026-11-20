@@ -4,12 +4,13 @@ import { headers } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { getAuthRuntime } from "@/lib/auth/runtime";
 import { readResume, singleString } from "@/lib/recruitment/action-helpers";
-import { allowPublicApplication, checkFormToken, getApplyLimiters, TRAP_FIELD } from "@/lib/recruitment/abuse";
+import { allowPublicApplication, checkFormToken, TRAP_FIELD } from "@/lib/recruitment/abuse";
 import { formDataToApplicationFields, parseApplicationInput } from "@/lib/recruitment/application-input";
 import { applyPublicly } from "@/lib/recruitment/applications";
 import { MINIMUM_APPLICANT_AGE } from "@/lib/recruitment/privacy-rules";
 import { RecruitmentError } from "@/lib/recruitment/errors";
 import type { FormState } from "@/lib/recruitment/form-state";
+import { findPublicOrganization } from "@/lib/recruitment/public-jobs";
 import { recruitmentDeps } from "@/lib/recruitment/runtime";
 import { logger } from "@/lib/security/logger";
 
@@ -50,7 +51,9 @@ export async function submitApplicationAction(organizationSlug: string, jobSlug:
 
     // 4. Rate limits, counted only for submissions that were otherwise valid.
     const deps = recruitmentDeps(await headers());
-    if (!allowPublicApplication(getApplyLimiters(), { ipAddress: deps.client.ipAddress, email: parsed.value.email }, now)) {
+    const organization = await findPublicOrganization(deps.db, organizationSlug);
+    if (!organization) return fail("This job is no longer available.");
+    if (!(await allowPublicApplication(deps.db, rt.authSecret, { organizationId: organization.id, ipAddress: deps.client.ipAddress, email: parsed.value.email }))) {
       return fail("Too many applications have been sent in a short time. Please try again in a little while.", values);
     }
 

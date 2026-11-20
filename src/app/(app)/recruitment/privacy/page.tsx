@@ -103,7 +103,9 @@ async function PrivacyContent({ searchParams }: { searchParams: Promise<Record<s
               <CardTitle>Due for removal</CardTitle>
               <CardDescription>
                 People whose applications were all closed without a hire more than {due.retentionMonths} months ago (before {formatDate(due.cutoff, timezone)}).
-                Review each one, then remove their personal data. Anyone can also be removed earlier from their candidate page, for example when they ask.
+                The scheduled retention job removes them automatically; you can also remove someone here now. Anyone can be removed earlier from their
+                candidate page, for example when they ask.
+                {due.graceUntil && ` The retention period was shortened recently, so until ${formatDate(due.graceUntil, timezone)} the longer previous period still applies.`}
               </CardDescription>
             </div>
           </CardHeader>
@@ -125,6 +127,11 @@ async function PrivacyContent({ searchParams }: { searchParams: Promise<Record<s
                 </li>
               ))}
             </ul>
+          )}
+          {due.total > due.items.length && (
+            <p className="border-t border-border px-5 py-3 text-xs text-fg-muted">
+              Showing {due.items.length} of {due.total} people due for removal.
+            </p>
           )}
         </Card>
       )}

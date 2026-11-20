@@ -1,6 +1,6 @@
 // Candidate privacy and retention (migration 20261117000000_candidate_privacy), against the DISPOSABLE test
 // database only: notice settings, the age confirmation, no applicant IP address, removing a candidate's personal
-// data (alone, or shared with another organisation), who may do it, and the due-for-removal list.
+// data (each organisation has its own profile of a person), who may do it, and the due-for-removal list.
 import { randomBytes } from "node:crypto";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -240,7 +240,7 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
 
     // The removal is recorded, with no personal data.
     const audit = (await raw.query(`SELECT actor_user_id, metadata FROM audit_logs WHERE action = 'candidate.removed' AND entity_id = $1`, [oc])).rows;
-    expect(audit).toEqual([{ actor_user_id: w.users.hr.id, metadata: { applicationsKept: 1, filesDeleted: 1, profile: "anonymised" } }]);
+    expect(audit).toEqual([{ actor_user_id: w.users.hr.id, metadata: { applicationsKept: 1, filesDeleted: 1, profile: "anonymised", reason: "staff" } }]);
 
     // Removing again finds nothing; the person can apply again, as someone new, even for the same job.
     await expect(removeCandidate(w.deps, w.sa, oc)).rejects.toMatchObject({ code: "not_found" });
@@ -254,16 +254,19 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
     const input = person();
     const inA = await rejectedApplicant(a, input);
     const inB = await applyPublicly(b.deps, b.target(b.job), input, resume(), AGE_OK);
-    const shared = (await owner.organizationCandidate.findUniqueOrThrow({ where: { id: inA.oc }, select: { candidateId: true } })).candidateId;
+    const aProfile = (await owner.organizationCandidate.findUniqueOrThrow({ where: { id: inA.oc }, select: { candidateId: true } })).candidateId;
     // Organisation B works with the person too: a stage move with a reason, a note, and notes on the person.
     const bOc = (await owner.application.findUniqueOrThrow({ where: { id: inB.id }, select: { organizationCandidateId: true } })).organizationCandidateId;
+    // Each organisation has its OWN profile of the person (same email, nothing shared).
+    const bProfile = (await owner.organizationCandidate.findUniqueOrThrow({ where: { id: bOc }, select: { candidateId: true } })).candidateId;
+    expect(bProfile).not.toBe(aProfile);
     await moveApplicationStage(b.deps, b.hr, inB.id, "UNDER_REVIEW");
     await addApplicationNote(b.deps, b.hr, inB.id, "Organisation B: strong latte art, call back.");
     await updateCandidateNotes(b.deps, b.hr, bOc, "Organisation B: prefers morning shifts.");
 
     // Everything organisation B holds about the person, read with the owner account (bypasses nothing B sees).
     const bState = async () => ({
-      profile: await owner.candidateProfile.findUniqueOrThrow({ where: { id: shared }, include: { educations: true, experiences: true, skills: true } }),
+      profile: await owner.candidateProfile.findUniqueOrThrow({ where: { id: bProfile }, include: { educations: true, experiences: true, skills: true } }),
       record: await owner.organizationCandidate.findUniqueOrThrow({ where: { id: bOc } }),
       application: await owner.application.findUniqueOrThrow({ where: { id: inB.id } }),
       history: await owner.applicationStatusHistory.findMany({ where: { applicationId: inB.id }, orderBy: { createdAt: "asc" } }),
@@ -291,13 +294,13 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
     expect((await listCandidates(db, b.hr, {})).items.map((c) => c.id)).toContain(bOc);
     expect(b.files.size).toBe(1);
     expect(before.profile).toMatchObject({ email: input.email, anonymizedAt: null });
-    // Organisation A's record now points to a separate, anonymous profile: no link back to the person.
+    // Organisation A's own profile is anonymised in place: no link back to the person.
     const aRecord = await owner.organizationCandidate.findUniqueOrThrow({ where: { id: inA.oc }, include: { candidate: true } });
-    expect(aRecord.candidateId).not.toBe(shared);
+    expect(aRecord.candidateId).toBe(aProfile);
     expect(aRecord.candidate).toMatchObject({ fullName: "Removed candidate", anonymizedAt: expect.any(Date) });
     expect(a.files.size).toBe(0);
     const audit = (await raw.query(`SELECT metadata->>'profile' AS p FROM audit_logs WHERE action = 'candidate.removed' AND entity_id = $1`, [inA.oc])).rows;
-    expect(audit).toEqual([{ p: "detached" }]);
+    expect(audit).toEqual([{ p: "anonymised" }]);
   });
 
   it("refuses while an application is open, to Employees, without a session, and for another organisation's candidate", async () => {
@@ -344,10 +347,24 @@ describe.skipIf(!enabled)("candidate privacy and retention (test database)", () 
     expect(due.items.map((d) => d.id)).toEqual([old.oc]);
     expect(due.items[0]).toMatchObject({ name: "Kavya Rao", applications: 1 });
     expect(due.items.map((d) => d.id)).not.toContain(recent.oc);
-    // A shorter period brings the recent one in too.
+    // A shorter period brings the recent one in too, but only after the 14-day grace (same rule as the automatic job).
     await updatePrivacySettings(w.deps, w.sa, { noticeName: "", contactEmail: "", retentionMonths: "1" });
     await owner.application.updateMany({ where: { organizationCandidateId: recent.oc }, data: { stageChangedAt: new Date(now.getTime() - 40 * 86_400_000) } });
-    expect((await listDueForRemoval(db, w.hr, now)).items.map((d) => d.id).sort()).toEqual([old.oc, recent.oc].sort());
+    const inGrace = await listDueForRemoval(db, w.hr, now);
+    expect(inGrace.retentionMonths).toBe(12);
+    expect(inGrace.graceUntil).not.toBeNull();
+    expect(inGrace.items.map((d) => d.id)).toEqual([old.oc]);
+    // 15 days later by this test's clock (the start of the grace moved back; the trigger is switched off for that one
+    // update only).
+    await raw.query("BEGIN");
+    await raw.query(`ALTER TABLE organizations DISABLE TRIGGER organizations_note_retention_change`);
+    await raw.query(`UPDATE organizations SET candidate_retention_shortened_at = $2::timestamptz - interval '15 days' WHERE id = $1`, [w.org.id, now]);
+    await raw.query(`ALTER TABLE organizations ENABLE TRIGGER organizations_note_retention_change`);
+    await raw.query("COMMIT");
+    const after = await listDueForRemoval(db, w.hr, now);
+    expect(after.retentionMonths).toBe(1);
+    expect(after.graceUntil).toBeNull();
+    expect(after.items.map((d) => d.id).sort()).toEqual([old.oc, recent.oc].sort());
     await expect(listDueForRemoval(db, w.emp, now)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
