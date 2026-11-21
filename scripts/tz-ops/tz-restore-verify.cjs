@@ -26,6 +26,8 @@ const cp = require("child_process");
 const req = (m) => require(require.resolve(m, { paths: [process.cwd()] }));
 const { Client } = req("pg");
 
+// The app's file store, resolved like the app (FILE_STORAGE_DIR, otherwise storage/private).
+const STORE = path.resolve(process.env.FILE_STORAGE_DIR?.trim() || path.join(process.cwd(), "storage", "private"));
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const stop = (m) => { console.error("\nSTOPPED: " + m); process.exit(2); };
@@ -93,7 +95,7 @@ function checkStorage() {
   let copyBad = 0, originalBad = 0;
   for (const m of manifest.files) {
     const copy = path.join(folder, "private", m.path);
-    const original = path.join("storage", "private", m.path);
+    const original = path.join(STORE, m.path);
     if (!fs.existsSync(copy) || fs.statSync(copy).size !== m.bytes || sha(copy) !== m.sha256) copyBad++;
     if (!fs.existsSync(original) || sha(original) !== m.sha256) originalBad++;
   }
@@ -101,7 +103,7 @@ function checkStorage() {
   line(originalBad === 0, `every original file is still present and unchanged (${originalBad} missing or changed)`);
   const walk = (dir, b = dir) => fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(dir, e.name), b) : [path.relative(b, path.join(dir, e.name)).split(path.sep).join("/")]) : [];
   const known = new Set(manifest.files.map((m) => m.path));
-  const extra = walk(path.join("storage", "private")).filter((p) => !known.has(p));
+  const extra = walk(STORE).filter((p) => !known.has(p));
   if (extra.length) console.log(`INFO  ${extra.length} file(s) in storage/private are newer than the file backup (not covered by it): take a new file backup before a production run`);
 }
 

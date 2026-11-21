@@ -1,4 +1,5 @@
-// Applies the pending release migrations to the REAL database (hr_recruitment), with guards, then checks the result.
+// Applies the pending release migrations (Employee Management + Attendance) to the REAL database (hr_recruitment),
+// with guards, then checks the result.
 //   node scripts/ops/release-migrate.cjs
 // Refuses (and changes nothing) unless:
 //   - the pending migrations are exactly the expected ones (same list as release-preflight.cjs);
@@ -19,15 +20,24 @@ const { Client } = req("pg");
 const stop = (m) => { console.error("STOPPED (nothing changed): " + m); process.exit(2); };
 
 const EXPECTED_PENDING = [
-  "20261118000000_interviews_feedback",
-  "20261118010000_interviews_review_fixes",
-  "20261118020000_candidate_profiles_per_organization",
-  "20261118020100_candidate_document_keeps_organization",
-  "20261118020200_candidate_document_links_same_organization",
-  "20261120000000_shared_limits_and_retention",
-  "20261120010000_retention_review_fixes",
-  "20261120020000_retention_review_fixes_2",
+  "20261121000000_employee_management",
+  "20261121010000_employee_management_fixes",
+  "20261122000000_attendance_shifts",
+  "20261122000100_attendance_records",
+  "20261122000200_attendance_exit_rules",
+  "20261122000300_attendance_fixes",
+  "20261122000400_standard_shifts_and_shift_history",
+  "20261122000500_standard_shifts_fixes",
 ];
+
+const NEW_TABLES = ["outlets", "designations", "employees", "employee_assignments", "shifts", "attendance_records", "attendance_breaks",
+  "attendance_changes", "attendance_correction_requests", "employee_shift_patterns", "shift_changes"];
+const READ_ONLY_TABLES = ["attendance_records", "attendance_breaks", "attendance_changes", "attendance_correction_requests", "shift_changes", "employee_assignments"];
+const APP_FUNCTIONS = ["app_my_employee_id", "app_has_permission", "app_clock_in", "app_clock_out", "app_break", "app_request_attendance_correction",
+  "app_withdraw_attendance_correction", "app_hr_record_attendance", "app_hr_correct_attendance", "app_hr_void_attendance",
+  "app_decide_attendance_correction", "app_remove_old_attendance_device_data", "app_apply_standard_shifts", "app_generate_standard_shifts"];
+const INTERNAL_FUNCTIONS = ["att_sync_standard_shifts", "att_apply_correction", "att_lock_employee", "att_say", "att_check_period", "guard_shift",
+  "guard_employee_status", "guard_employee_manager", "record_employee_assignment", "record_shift_change", "att_org_timezone"];
 
 if (process.env.MIGRATION_DATABASE_URL) stop("MIGRATION_DATABASE_URL is set in this shell; open a new terminal");
 req("dotenv").config({ path: ".env", quiet: true });
@@ -84,26 +94,25 @@ const line = (ok, text) => { if (!ok) bad++; console.log((ok ? "PASS  " : "FAIL 
     await p.query("BEGIN READ ONLY");
     const done = (await pq(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`)).map((x) => x.migration_name);
     line(EXPECTED_PENDING.every((m) => done.includes(m)), "all release migrations are recorded as applied");
-    const notNull = await pq(`SELECT table_name FROM information_schema.columns WHERE column_name = 'organization_id' AND is_nullable = 'NO'
-      AND table_name IN ('candidate_profiles','candidate_educations','candidate_experiences','candidate_skills','candidate_documents')`);
-    line(notNull.length === 5, `candidate profiles, education, experience, skills and documents all require an organisation (${notNull.length}/5)`);
-    const [shared] = await pq(`SELECT count(*)::int n FROM (SELECT candidate_id FROM organization_candidates GROUP BY candidate_id HAVING count(*) > 1) s`);
-    line(shared.n === 0, "no candidate profile is shared by two organisation records");
-    const fns = await pq(`SELECT p.proname, has_function_privilege('hr_runtime', p.oid, 'EXECUTE') AS rt, has_function_privilege('public', p.oid, 'EXECUTE') AS pub
-      FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN
-      ('app_public_apply_allowed','app_remove_due_candidates','app_pending_file_removals','app_confirm_file_removed','app_remove_candidate','app_remove_candidate_core','app_feedback_visible')`);
+    const [ext] = await pq(`SELECT count(*)::int n FROM pg_extension WHERE extname = 'btree_gist'`);
+    line(ext.n === 1, "btree_gist is installed");
+    const rls = await pq(`SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND relname = ANY($1)`, [NEW_TABLES]);
+    line(rls.length === NEW_TABLES.length && rls.every((r) => r.relrowsecurity), `row-level security is on for all ${NEW_TABLES.length} new tables (${rls.filter((r) => r.relrowsecurity).length}/${NEW_TABLES.length})`);
+    const writes = await pq(`SELECT t FROM unnest($1::text[]) t WHERE has_table_privilege('hr_runtime', t, 'INSERT') OR has_table_privilege('hr_runtime', t, 'UPDATE') OR has_table_privilege('hr_runtime', t, 'DELETE') OR has_table_privilege('hr_runtime', t, 'TRUNCATE')`, [READ_ONLY_TABLES]);
+    line(writes.length === 0, `the app can only read attendance, its history and shift history${writes.length ? ": writable: " + writes.map((r) => r.t).join(", ") : ""}`);
+    const [sh] = await pq(`SELECT has_table_privilege('hr_runtime', 'shifts', 'DELETE') d, has_table_privilege('hr_runtime', 'shifts', 'TRUNCATE') t, has_table_privilege('hr_runtime', 'shifts', 'UPDATE') u`);
+    line(!sh.d && !sh.t && !sh.u, "shifts: the app cannot delete or truncate, and may update only the allowed columns");
+    const fns = await pq(`SELECT p.proname, bool_or(has_function_privilege('hr_runtime', p.oid, 'EXECUTE')) AS rt, bool_or(has_function_privilege('public', p.oid, 'EXECUTE')) AS pub
+      FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1) GROUP BY p.proname`, [[...APP_FUNCTIONS, ...INTERNAL_FUNCTIONS]]);
     const fn = Object.fromEntries(fns.map((x) => [x.proname, x]));
-    for (const n of ["app_public_apply_allowed", "app_remove_due_candidates", "app_pending_file_removals", "app_confirm_file_removed", "app_remove_candidate", "app_feedback_visible"]) {
-      line(fn[n]?.rt === true && fn[n]?.pub === false, `${n}: the app may call it, nobody else`);
-    }
-    line(fn.app_remove_candidate_core && fn.app_remove_candidate_core.rt === false && fn.app_remove_candidate_core.pub === false, "app_remove_candidate_core: not callable by the app or anyone else");
-    const [rate] = await pq(`SELECT has_table_privilege('hr_runtime', 'public_apply_rate_events', 'SELECT') AS s`);
-    const [x] = await pq(`SELECT
-        (SELECT count(*) FROM information_schema.columns WHERE table_name = 'organizations' AND column_name IN ('candidate_retention_previous_months', 'candidate_retention_shortened_at'))::int AS cols,
-        (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('applications_candidate_not_removed', 'organizations_note_retention_change'))::int AS trg,
-        (SELECT count(*) FROM pg_indexes WHERE indexname = 'candidate_documents_pending_file_removal_idx')::int AS idx`);
-    line(x.cols === 2 && x.trg === 2 && x.idx === 1, "retention grace columns, the two guard triggers and the pending-file index are in place");
-    line(rate.s === false, "the app account cannot read the rate-limit table directly");
+    const appOk = APP_FUNCTIONS.filter((n) => fn[n]?.rt === true && fn[n]?.pub === false);
+    line(appOk.length === APP_FUNCTIONS.length, `${appOk.length}/${APP_FUNCTIONS.length} entry functions: the app may call them, nobody else${appOk.length === APP_FUNCTIONS.length ? "" : " (wrong: " + APP_FUNCTIONS.filter((n) => !appOk.includes(n)).join(", ") + ")"}`);
+    const intOk = INTERNAL_FUNCTIONS.filter((n) => fn[n] && fn[n].rt === false && fn[n].pub === false);
+    line(intOk.length === INTERNAL_FUNCTIONS.length, `${intOk.length}/${INTERNAL_FUNCTIONS.length} internal functions: not callable by the app or anyone else${intOk.length === INTERNAL_FUNCTIONS.length ? "" : " (wrong: " + INTERNAL_FUNCTIONS.filter((n) => !intOk.includes(n)).join(", ") + ")"}`);
+    const clock = (await pq(`SELECT r.key FROM role_permissions rp JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = 'self:attendance_clock' ORDER BY 1`)).map((x) => x.key);
+    line(clock.join(",") === "EMPLOYEE,HR_MANAGER,SUPER_ADMIN", `self:attendance_clock is held by all three roles (${clock.join(", ")})`);
+    const [counts] = await pq(`SELECT (SELECT count(*) FROM employees)::int e, (SELECT count(*) FROM shifts)::int s, (SELECT count(*) FROM attendance_records)::int a`);
+    console.log(`INFO  new tables start empty: ${counts.e} employees, ${counts.s} shifts, ${counts.a} attendance records`);
   } finally {
     await p.query("ROLLBACK").catch(() => {});
     await p.end();

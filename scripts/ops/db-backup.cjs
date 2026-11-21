@@ -37,6 +37,9 @@ fs.mkdirSync(dir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
 const file = path.join(dir, `hr_recruitment-${label}-${stamp}.dump`);
 if (fs.existsSync(file) || fs.existsSync(file + ".partial")) stop("file exists: " + file);
+// Room for the dump: at least 200 MB free (the dump is a few hundred KB today; this leaves a wide margin).
+const st = fs.statfsSync(dir);
+if (st.bavail * st.bsize < 200 * 1024 * 1024) stop(`not enough free space in ${dir} (need 200 MB)`);
 partial = file + ".partial";
 
 let r = cp.spawnSync(path.join(bin, "pg_dump.exe"), ["--format=custom", "--no-password", "--host", u.hostname, "--port", u.port || "5432",

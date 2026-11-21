@@ -1,12 +1,13 @@
-// READ-ONLY pre-flight of the REAL database (hr_recruitment) before the release that brings interviews, candidate
-// profiles per organisation, document links per organisation, shared application limits and automatic retention.
+// READ-ONLY pre-flight of the REAL database (hr_recruitment) before the release that brings Employee Management and
+// Attendance (rota, standard shifts, clock-in/out, corrections, shift history).
 //   node scripts/ops/release-preflight.cjs
 // Everything runs inside BEGIN READ ONLY ... ROLLBACK as the owner account from .env: nothing can be changed.
 // It reports:
 //   - the migration history: every applied migration still matches its file byte for byte (Prisma checksum),
 //     none failed, and exactly the expected migrations are pending;
-//   - what the candidate split would do (shared profiles, profiles to rebuild) and anything that would make it stop;
-//   - how many candidates the retention job would remove on its FIRST run, per organisation;
+//   - what the new migrations need: the btree_gist extension (installable by the owner account), a valid time zone
+//     for every organisation (attendance computes local days with it), the three roles and the attendance
+//     permissions they extend;
 //   - whether the app is connected right now (it should be stopped while migrating);
 //   - the newest backup.
 "use strict";
@@ -19,14 +20,14 @@ const { Client } = req("pg");
 const stop = (m) => { console.error("STOPPED: " + m); process.exit(2); };
 
 const EXPECTED_PENDING = [
-  "20261118000000_interviews_feedback",
-  "20261118010000_interviews_review_fixes",
-  "20261118020000_candidate_profiles_per_organization",
-  "20261118020100_candidate_document_keeps_organization",
-  "20261118020200_candidate_document_links_same_organization",
-  "20261120000000_shared_limits_and_retention",
-  "20261120010000_retention_review_fixes",
-  "20261120020000_retention_review_fixes_2",
+  "20261121000000_employee_management",
+  "20261121010000_employee_management_fixes",
+  "20261122000000_attendance_shifts",
+  "20261122000100_attendance_records",
+  "20261122000200_attendance_exit_rules",
+  "20261122000300_attendance_fixes",
+  "20261122000400_standard_shifts_and_shift_history",
+  "20261122000500_standard_shifts_fixes",
 ];
 
 if (process.env.MIGRATION_DATABASE_URL) stop("MIGRATION_DATABASE_URL is set in this shell; open a new terminal");
@@ -65,45 +66,27 @@ const info = (text) => console.log("INFO  " + text);
     const pending = local.filter((m) => !applied.some((r) => r.migration_name === m));
     line(JSON.stringify(pending) === JSON.stringify(EXPECTED_PENDING), `pending migrations are exactly the ${EXPECTED_PENDING.length} expected ones${JSON.stringify(pending) === JSON.stringify(EXPECTED_PENDING) ? "" : ": " + pending.join(", ")}`);
 
-    // ---- candidate split (20261118020000) ----
-    const orgs = await q(`SELECT slug, candidate_retention_months FROM organizations ORDER BY slug`);
-    info(`organisations: ${orgs.map((o) => `${o.slug} (keeps candidates ${o.candidate_retention_months} months)`).join(", ")}`);
-    const [s] = await q(`WITH r AS (
-        SELECT oc.id, oc.removed_at,
-          (SELECT count(*) FROM organization_candidates o WHERE o.candidate_id = oc.candidate_id) AS links,
-          cp.created_at < oc.created_at - INTERVAL '2 seconds' AS profile_older,
-          EXISTS (SELECT 1 FROM applications a WHERE a.organization_candidate_id = oc.id AND a.profile_snapshot IS NOT NULL) AS has_snapshot
-        FROM organization_candidates oc JOIN candidate_profiles cp ON cp.id = oc.candidate_id)
-      SELECT count(*)::int AS records,
-             count(*) FILTER (WHERE links > 1)::int AS on_shared,
-             count(*) FILTER (WHERE links = 1 AND profile_older)::int AS older_profile,
-             count(*) FILTER (WHERE (links > 1 OR profile_older) AND removed_at IS NULL AND NOT has_snapshot)::int AS would_stop
-      FROM r`);
-    info(`candidate records: ${s.records}; on shared profiles: ${s.on_shared}; lone records with an older profile (rebuilt): ${s.older_profile}`);
-    line(s.would_stop === 0, `no record needs a rebuilt profile without submitted details (${s.would_stop})`);
-    const [x] = await q(`SELECT
-        (SELECT count(*) FROM candidate_profiles cp WHERE NOT EXISTS (SELECT 1 FROM organization_candidates oc WHERE oc.candidate_id = cp.id))::int AS profiles_without_org,
-        (SELECT count(*) FROM candidate_documents WHERE organization_id IS NULL)::int AS documents_without_org,
-        (SELECT count(*) FROM candidate_profiles WHERE email <> lower(btrim(email)) OR email = '')::int AS non_normalised_emails,
-        (SELECT count(*) FROM candidate_accounts)::int AS candidate_accounts,
-        (SELECT count(*) FROM candidate_login_tokens)::int AS login_tokens,
-        (SELECT count(*) FROM audit_logs WHERE action = 'candidate.removed' AND metadata->>'profile' = 'detached')::int AS detached_removals`);
-    line(x.profiles_without_org === 0, `every candidate profile belongs to an organisation (${x.profiles_without_org} without)`);
-    line(x.documents_without_org === 0, `every candidate document has an organisation (${x.documents_without_org} without)`);
-    line(x.non_normalised_emails === 0, `every candidate email is normalised (${x.non_normalised_emails} not)`);
-    info(`candidate accounts: ${x.candidate_accounts}; sign-in links: ${x.login_tokens}; earlier "detached" removals: ${x.detached_removals}`);
-
-    // ---- first run of the retention job ----
-    const due = await q(`SELECT o.slug, count(*)::int AS n FROM (
-        SELECT oc.id, oc.organization_id FROM organization_candidates oc
-        JOIN organizations o2 ON o2.id = oc.organization_id
-        JOIN applications a ON a.organization_candidate_id = oc.id AND a.organization_id = oc.organization_id
-        WHERE oc.removed_at IS NULL
-        GROUP BY oc.id, oc.organization_id, o2.candidate_retention_months
-        HAVING bool_and(a.stage IN ('REJECTED','WITHDRAWN','OFFER_DECLINED'))
-           AND max(a.stage_changed_at) < ((now() AT TIME ZONE 'UTC') - make_interval(months => o2.candidate_retention_months)) AT TIME ZONE 'UTC') d
-      JOIN organizations o ON o.id = d.organization_id GROUP BY o.slug ORDER BY o.slug`);
-    info(`the retention job's first run would remove: ${due.length ? due.map((d) => `${d.n} in ${d.slug}`).join(", ") : "nobody (no candidate is past the retention period)"}`);
+    // ---- what the new migrations need ----
+    const [ext] = await q(`SELECT e.installed_version, v.trusted, v.superuser,
+        has_database_privilege(current_user, current_database(), 'CREATE') AS can_create
+      FROM pg_available_extensions e JOIN pg_available_extension_versions v ON v.name = e.name AND v.version = e.default_version
+      WHERE e.name = 'btree_gist'`);
+    line(Boolean(ext) && (ext.installed_version !== null || (ext.trusted && ext.can_create)),
+      `btree_gist ${ext ? (ext.installed_version ? `already installed (${ext.installed_version})` : `available, trusted=${ext.trusted}, owner may create=${ext.can_create}`) : "NOT AVAILABLE on this server"}`);
+    const orgs = await q(`SELECT o.slug, o.timezone, EXISTS (SELECT 1 FROM pg_timezone_names t WHERE t.name = o.timezone) AS valid FROM organizations o ORDER BY o.slug`);
+    info(`organisations: ${orgs.map((o) => `${o.slug} (${o.timezone})`).join(", ")}`);
+    line(orgs.every((o) => o.valid), `every organisation has a real time zone${orgs.some((o) => !o.valid) ? ": not valid: " + orgs.filter((o) => !o.valid).map((o) => o.slug).join(", ") : ""}`);
+    const roles = (await q(`SELECT key FROM roles ORDER BY key`)).map((r) => r.key);
+    line(["EMPLOYEE", "HR_MANAGER", "SUPER_ADMIN"].every((k) => roles.includes(k)) && roles.length === 3, `exactly the three roles exist (${roles.join(", ")})`);
+    const perms = (await q(`SELECT key FROM permissions WHERE key IN ('attendance:read', 'attendance:manage', 'self:attendance_read', 'employee:read', 'employee:manage', 'self:attendance_clock')`)).map((r) => r.key);
+    line(["attendance:read", "attendance:manage", "self:attendance_read", "employee:read", "employee:manage"].every((k) => perms.includes(k)), "the attendance and employee permissions the migrations build on exist");
+    info(`self:attendance_clock ${perms.includes("self:attendance_clock") ? "already exists" : "will be added (to all three roles)"}`);
+    const clash = await q(`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN
+      ('outlets','designations','employees','employee_assignments','shifts','attendance_records','attendance_breaks','attendance_changes',
+       'attendance_correction_requests','employee_shift_patterns','shift_changes')`);
+    line(clash.length === 0, `none of the new tables exists yet${clash.length ? ": " + clash.map((r) => r.table_name).join(", ") : ""}`);
+    const [depts] = await q(`SELECT count(*)::int AS n FROM departments`);
+    info(`departments today: ${depts.n} (employees can be assigned to them)`);
 
     // ---- is the app connected? ----
     const conns = await q(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = 'hr_recruitment' AND usename = 'hr_runtime'`);
