@@ -64,6 +64,7 @@ export const PERMISSION_KEYS = [
   "attendance:manage",
   "leave:read",
   "leave:approve",
+  "leave:manage",
   // Reports
   "report:read",
   // Self-service (every role)

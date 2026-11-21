@@ -343,6 +343,7 @@ export const DB_MESSAGES: Record<string, string> = {
   employee_clocked_in: "This employee is clocked in. Close their attendance record first.",
   employee_joined_after_attendance: "This employee has attendance or planned shifts before that joining date.",
   employee_attendance_after_exit: "This employee has attendance after that day. Choose a later last working day, or correct the attendance first.",
+  on_leave: "You are on leave today. Ask HR if that is wrong.",
   not_found: "That record was not found.",
 };
 

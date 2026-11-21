@@ -5,7 +5,7 @@
 // Meant to run once a day from a scheduler (Windows Task Scheduler, cron, or the hosting platform's jobs). It
 // connects with the app's own restricted account (DATABASE_URL), like the app.
 import "dotenv/config";
-import { generateStandardShifts, removeOldAttendanceDeviceData } from "@/lib/attendance/retention";
+import { generateStandardShifts, removeOldAttendanceDeviceData, runLeaveHousekeeping } from "@/lib/attendance/retention";
 import { getDb } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { runCandidateRetention } from "@/lib/recruitment/retention";
@@ -27,6 +27,9 @@ async function main() {
     // Attendance: fill the coming two weeks of the rota from the standard shifts.
     const shifts = await generateStandardShifts(db);
     console.log(shifts === null ? "Standard shifts: not installed on this database yet." : `Added ${shifts} shift(s) to the rota from the standard shifts.`);
+    // Leave: yearly grants, monthly accruals, and the close of last year (from 1 February).
+    const leave = await runLeaveHousekeeping(db);
+    console.log(leave === null ? "Leave: not installed on this database yet." : `Wrote ${leave} leave balance line(s) (grants, accruals, year close).`);
   } finally {
     await db.$disconnect();
   }

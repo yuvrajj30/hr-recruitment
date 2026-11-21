@@ -16,7 +16,8 @@ const TZ = "Asia/Kolkata";
 type K = "a" | "b";
 type Who = "hr" | "emp";
 
-describe.skipIf(!enabled)("standard shifts and shift history (test database)", () => {
+// Each test fills the rota several times (about 15 s alone); with other database files in parallel that can pass 30 s.
+describe.skipIf(!enabled)("standard shifts and shift history (test database)", { timeout: 90_000 }, () => {
   let owner: Db;
   let raw: Client;
   let rt: Client;

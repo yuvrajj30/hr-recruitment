@@ -41,7 +41,7 @@ function friendly(error: unknown): Error {
   if (!code) return error as Error;
   if (code === "not_found") return notFound("That record");
   if (["already_clocked_in", "not_clocked_in", "already_on_break", "not_on_break", "request_pending", "request_not_pending", "attendance_void",
-       "shift_started", "shift_over", "shift_cancelled", "own_request", "attendance_overlap", "shifts_no_overlap"].includes(code)) {
+       "shift_started", "shift_over", "shift_cancelled", "own_request", "attendance_overlap", "shifts_no_overlap", "on_leave"].includes(code)) {
     return conflict(DB_MESSAGES[code]!);
   }
   return invalid(DB_MESSAGES[code]!);
@@ -208,7 +208,10 @@ export async function withdrawRequest(deps: AttendanceDeps, ctx: AuthContext, re
 // HR: one day (planned versus actual), what needs attention, requests, one record's history
 // ---------------------------------------------------------------------------
 export type DayRow = { employeeId: string; employeeName: string; employeeCode: string; shifts: (ShiftView & { missed: boolean })[]; records: RecordView[] };
-export type DayView = { day: string; rows: DayRow[]; attention: RecordView[]; pendingRequests: number };
+// onLeave: approved leave that day (needs leave:read too; without it the database shows none). half: a half day,
+// so that person's shift stays planned. A shift cancelled because of leave is CANCELLED, so it is never "missed".
+export type DayLeave = { employeeId: string; employeeName: string; typeCode: string; half: boolean };
+export type DayView = { day: string; rows: DayRow[]; attention: RecordView[]; pendingRequests: number; onLeave: DayLeave[] };
 
 export async function getDay(rawDb: Db, ctx: AuthContext, day: string, timeZone: string, now: Date, outletId: string | null): Promise<DayView> {
   requirePermission(ctx, "attendance:read");
@@ -236,6 +239,19 @@ export async function getDay(rawDb: Db, ctx: AuthContext, day: string, timeZone:
     }),
     await tx.attendanceCorrectionRequest.count({ where: { organizationId, status: "PENDING" } }),
   ] as const);
+  const dayDate = new Date(`${day}T00:00:00Z`);
+  const leave = ctx.permissions.has("leave:read")
+    ? await db.leaveRequest.findMany({
+      where: { organizationId, status: "APPROVED", startDay: { lte: dayDate }, endDay: { gte: dayDate }, ...(outlet ? { employee: { outletId: outlet } } : {}) },
+      select: { employeeId: true, startDay: true, endDay: true, startHalf: true, endHalf: true, employee: { select: { fullName: true } }, leaveType: { select: { code: true } } },
+    })
+    : [];
+  const onLeave = leave.map((l) => {
+    const first = l.startDay.toISOString().slice(0, 10) === day;
+    const last = l.endDay.toISOString().slice(0, 10) === day;
+    const half = first && last ? l.startHalf || l.endHalf : (first && l.startHalf) || (last && l.endHalf);
+    return { employeeId: l.employeeId, employeeName: l.employee.fullName, typeCode: l.leaveType.code, half };
+  }).sort((a, b) => a.employeeName.localeCompare(b.employeeName));
   const byEmployee = new Map<string, DayRow>();
   const row = (id: string, name: string, code: string) => {
     let r = byEmployee.get(id);
@@ -249,6 +265,7 @@ export async function getDay(rawDb: Db, ctx: AuthContext, day: string, timeZone:
     rows: [...byEmployee.values()].sort((a, b) => a.employeeName.localeCompare(b.employeeName)),
     attention: attention.map((r) => toRecordView(r, now)).filter((r) => r.flags.includes("missing_out")),
     pendingRequests,
+    onLeave,
   };
 }
 

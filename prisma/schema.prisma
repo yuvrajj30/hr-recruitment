@@ -329,6 +329,8 @@ model Organization {
   integrationConnections IntegrationConnection[]
   apiClients             ApiClient[]
   staffInvitations       StaffInvitation[]
+  leaveTypes             LeaveType[]
+  holidays               Holiday[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -378,6 +380,10 @@ model User {
   invitationsSent           StaffInvitation[]             @relation("InvitationInvitedBy")
   invitationsAccepted       StaffInvitation[]             @relation("InvitationAcceptedUser")
   invitationsRevoked        StaffInvitation[]             @relation("InvitationRevokedBy")
+  leaveLedgerCreated        LeaveLedgerEntry[]            @relation("LeaveLedgerCreatedBy")
+  leaveRequested            LeaveRequest[]                @relation("LeaveRequestedBy")
+  leaveDecided              LeaveRequest[]                @relation("LeaveDecidedBy")
+  leaveCancelled            LeaveRequest[]                @relation("LeaveCancelledBy")
 
   @@map("users")
 }
@@ -1564,6 +1570,7 @@ model Outlet {
   assignments  EmployeeAssignment[]
   shifts       Shift[]
   attendance   AttendanceRecord[]
+  holidays     Holiday[]
 
   @@unique([organizationId, name])
   @@unique([organizationId, id])
@@ -1624,6 +1631,8 @@ model Employee {
   correctionRequests AttendanceCorrectionRequest[]
   // At most one (unique employee_id); a list for Prisma, whose one-to-one needs the composite key to be unique.
   shiftPatterns      EmployeeShiftPattern[]
+  leaveLedger        LeaveLedgerEntry[]
+  leaveRequests      LeaveRequest[]
 
   @@unique([organizationId, employeeCode])
   @@unique([organizationId, id])
@@ -1896,4 +1905,154 @@ model ShiftChange {
 
   @@index([organizationId, shiftId, createdAt], map: "shift_changes_organization_id_shift_id_idx")
   @@map("shift_changes")
+}
+
+// Leave (migrations 20261123000000_leave, 20261123000100_leave_functions). The app only READS the ledger and the
+// requests; the database functions app_request_leave, app_decide_leave, ... write them. Partial unique indexes
+// (one GRANT / ACCRUAL / TAKEN ...) and the holidays expression index live in the SQL only.
+enum LeaveAccrual {
+  NONE
+  YEARLY
+  MONTHLY
+}
+
+enum LeaveLedgerKind {
+  GRANT
+  ACCRUAL
+  TAKEN
+  RESTORED
+  ADJUSTMENT
+  CARRY_OVER
+  EXPIRED
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  CANCELLED
+}
+
+model LeaveType {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  paid           Boolean      @default(true)
+  accrual        LeaveAccrual @default(YEARLY)
+  daysPerYear    Decimal      @default(0) @map("days_per_year") @db.Decimal(5, 1)
+  carryOverMax   Decimal      @default(0) @map("carry_over_max") @db.Decimal(5, 1)
+  noteRequired   Boolean      @default(false) @map("note_required")
+  configured     Boolean      @default(false)
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ledger       LeaveLedgerEntry[]
+  requests     LeaveRequest[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, id])
+  @@map("leave_types")
+}
+
+model Holiday {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  outletId       String?  @map("outlet_id") @db.Uuid
+  day            DateTime @db.Date
+  name           String
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  outlet       Outlet?      @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, day])
+  @@map("holidays")
+}
+
+model LeaveLedgerEntry {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  employeeId     String          @map("employee_id") @db.Uuid
+  leaveTypeId    String          @map("leave_type_id") @db.Uuid
+  year           Int             @db.SmallInt
+  kind           LeaveLedgerKind
+  days           Decimal         @db.Decimal(5, 1)
+  month          Int?            @db.SmallInt
+  requestId      String?         @map("request_id") @db.Uuid
+  reason         String?
+  createdById    String?         @map("created_by_id") @db.Uuid
+  createdAt      DateTime        @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  employee  Employee      @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade, map: "leave_ledger_employee_fkey")
+  leaveType LeaveType     @relation(fields: [organizationId, leaveTypeId], references: [organizationId, id], onDelete: Restrict, map: "leave_ledger_type_fkey")
+  request   LeaveRequest? @relation(fields: [organizationId, requestId], references: [organizationId, id], onDelete: Cascade, map: "leave_ledger_request_fkey")
+  createdBy User?         @relation("LeaveLedgerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, employeeId, leaveTypeId, year], map: "leave_ledger_balance_idx")
+  @@index([requestId])
+  @@map("leave_ledger")
+}
+
+model LeaveRequest {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  employeeId     String             @map("employee_id") @db.Uuid
+  leaveTypeId    String             @map("leave_type_id") @db.Uuid
+  startDay       DateTime           @map("start_day") @db.Date
+  endDay         DateTime           @map("end_day") @db.Date
+  startHalf      Boolean            @default(false) @map("start_half")
+  endHalf        Boolean            @default(false) @map("end_half")
+  days           Decimal            @db.Decimal(5, 1)
+  note           String?
+  status         LeaveRequestStatus @default(PENDING)
+  requestedById  String?            @map("requested_by_id") @db.Uuid
+  decidedById    String?            @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime?          @map("decided_at") @db.Timestamptz(6)
+  decisionNote   String?            @map("decision_note")
+  selfDecided    Boolean            @default(false) @map("self_decided")
+  cancelledById  String?            @map("cancelled_by_id") @db.Uuid
+  cancelledAt    DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason   String?            @map("cancel_reason")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee    Employee           @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade, map: "leave_requests_employee_fkey")
+  leaveType   LeaveType          @relation(fields: [organizationId, leaveTypeId], references: [organizationId, id], onDelete: Restrict, map: "leave_requests_type_fkey")
+  requestedBy User?              @relation("LeaveRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy   User?              @relation("LeaveDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  cancelledBy User?              @relation("LeaveCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  ledger      LeaveLedgerEntry[]
+  chargedDays LeaveRequestDay[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, status, startDay], map: "leave_requests_organization_id_status_idx")
+  @@index([organizationId, employeeId, startDay], map: "leave_requests_organization_id_employee_id_idx")
+  @@map("leave_requests")
+}
+
+// Valid time zone names, copied from pg_timezone_names (migration 20261123000200_time_zone_lookup) so that
+// att_org_timezone does not read the whole time zone database on each call. Read only by database functions.
+model TimeZoneName {
+  name String @id
+
+  @@map("time_zone_names")
+}
+
+// What each day of an approved leave request was charged (migration 20261123000300_leave_review_fixes), so a cancel
+// gives back exactly the charge of the days not yet taken. Written and read only by the database functions.
+model LeaveRequestDay {
+  organizationId String   @map("organization_id") @db.Uuid
+  requestId      String   @map("request_id") @db.Uuid
+  day            DateTime @db.Date
+  weight         Decimal  @db.Decimal(2, 1)
+
+  request LeaveRequest @relation(fields: [organizationId, requestId], references: [organizationId, id], onDelete: Cascade, map: "leave_request_days_request_fkey")
+
+  @@id([requestId, day])
+  @@index([organizationId])
+  @@map("leave_request_days")
 }

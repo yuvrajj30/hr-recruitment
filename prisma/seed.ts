@@ -115,6 +115,7 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
   leave: [
     ["leave:read", "View everyone's leave requests"],
     ["leave:approve", "Approve or reject leave requests"],
+    ["leave:manage", "Set up leave types, holidays and balance adjustments"],
   ],
   report: [["report:read", "View HR reports and dashboards"]],
   self: [

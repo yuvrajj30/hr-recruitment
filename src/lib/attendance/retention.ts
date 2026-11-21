@@ -32,3 +32,17 @@ export async function generateStandardShifts(db: Db): Promise<number | null> {
     throw error;
   }
 }
+
+// Housekeeping: leave grants and monthly accruals, and from 1 February the close of the previous leave year
+// (carry-over up to each type's cap; the rest expires). Idempotent. Returns the number of ledger lines written, or
+// null when the database does not have leave yet.
+export async function runLeaveHousekeeping(db: Db): Promise<number | null> {
+  try {
+    const rows = await maintenanceDb(db).$queryRaw<{ n: number }[]>`SELECT app_leave_housekeeping() AS n`;
+    return Number(rows[0]?.n ?? 0);
+  } catch (error) {
+    const text = String((error as Error)?.message ?? "") + JSON.stringify((error as { meta?: unknown })?.meta ?? "");
+    if (/42883|function .* does not exist/i.test(text)) return null;
+    throw error;
+  }
+}

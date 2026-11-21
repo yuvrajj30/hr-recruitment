@@ -47,6 +47,12 @@ describe("the three roles", () => {
     for (const key of ROLE_KEYS) for (const p of ROLE_PERMISSIONS.EMPLOYEE) expect(has(key, p), `${key}: ${p}`).toBe(true);
   });
 
+  it("let only HR roles set up leave (types, holidays, adjustments)", () => {
+    expect(has("SUPER_ADMIN", "leave:manage")).toBe(true);
+    expect(has("HR_MANAGER", "leave:manage")).toBe(true);
+    expect(has("EMPLOYEE", "leave:manage")).toBe(false);
+  });
+
   it("never invite anyone straight in as a Super Admin", () => {
     expect(INVITABLE_ROLES).toEqual(["HR_MANAGER", "EMPLOYEE"]);
   });

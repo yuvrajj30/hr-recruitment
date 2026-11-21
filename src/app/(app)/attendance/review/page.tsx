@@ -58,6 +58,9 @@ async function ReviewContent({ searchParams }: { searchParams: Promise<Query> })
   const [view, rota] = await Promise.all([getDay(rt.db, auth, day, tz, now, outlet || null), getRota(rt.db, auth, dayRange(day, tz), null)]);
   const link = (d: string) => `/attendance/review?day=${d}${outlet ? `&outlet=${encodeURIComponent(outlet)}` : ""}`;
   const dayLabel = formatDate(dayRange(day, tz).start, tz);
+  const leaveBadge = (l: { typeCode: string; half: boolean }) => (l.half ? `Half day leave: ${l.typeCode}` : `On leave: ${l.typeCode}`);
+  const rowIds = new Set(view.rows.map((r) => r.employeeId));
+  const leaveOnly = view.onLeave.filter((l) => !rowIds.has(l.employeeId));
 
   return (
     <div className="space-y-6">
@@ -160,6 +163,13 @@ async function ReviewContent({ searchParams }: { searchParams: Promise<Query> })
                     <td className="px-5 py-3">
                       <span className="font-medium text-fg">{row.employeeName}</span>
                       <span className="block text-xs text-fg-muted">{row.employeeCode}</span>
+                      {view.onLeave
+                        .filter((l) => l.employeeId === row.employeeId)
+                        .map((l) => (
+                          <Badge key={l.typeCode} tone="accent" className="mt-1">
+                            {leaveBadge(l)}
+                          </Badge>
+                        ))}
                     </td>
                     <td className="space-y-2 px-3 py-3">
                       {row.shifts.length === 0 && <span className="text-fg-subtle">—</span>}
@@ -198,6 +208,22 @@ async function ReviewContent({ searchParams }: { searchParams: Promise<Query> })
           </div>
         )}
       </Card>
+
+      {leaveOnly.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{day === today ? "On leave today" : "On leave on this day"}</CardTitle>
+          </CardHeader>
+          <ul className="divide-y divide-border text-[13px]">
+            {leaveOnly.map((l) => (
+              <li key={`${l.employeeId}-${l.typeCode}`} className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5">
+                <span className="font-medium text-fg">{l.employeeName}</span>
+                <Badge tone="accent">{leaveBadge(l)}</Badge>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {canManage && (
         <Card>
