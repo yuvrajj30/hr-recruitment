@@ -37,6 +37,9 @@ function friendly(error: unknown): Error {
   if (/manager_not_active/.test(msg)) return invalid("Check the highlighted fields.", { managerId: "Choose an active employee." });
   if (/employee_exited/.test(msg)) return conflict("This employee has left. Their record can no longer be changed.");
   if (/employee_has_reports/.test(msg)) return invalid("Active employees still report to this person. Give them another manager first.");
+  if (/employee_joined_after_attendance/.test(msg)) return invalid("This person has attendance or planned shifts before that joining date.", { joinedOn: "There is attendance before this date." });
+  if (/employee_clocked_in/.test(msg)) return invalid("This person is clocked in. Close their attendance record first (Attendance → review).");
+  if (/employee_attendance_after_exit/.test(msg)) return invalid("This person has attendance after that day. Choose a later last working day, or correct the attendance first.");
   if (/employees_organization_id_employee_code_key|employee_code/.test(msg) && /23505|duplicate|Unique constraint/i.test(msg)) {
     return invalid("Another employee already has this code.", { employeeCode: "This code is already used." });
   }

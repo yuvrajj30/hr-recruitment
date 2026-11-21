@@ -39,7 +39,7 @@ describe("the three roles", () => {
   });
 
   it("give Employees self-service only: nothing about other people, recruitment or administration", () => {
-    expect([...ROLE_PERMISSIONS.EMPLOYEE].sort()).toEqual(["notification:read", "self:attendance_read", "self:leave_apply", "self:leave_read", "self:profile_read", "self:profile_update"]);
+    expect([...ROLE_PERMISSIONS.EMPLOYEE].sort()).toEqual(["notification:read", "self:attendance_clock", "self:attendance_read", "self:leave_apply", "self:leave_read", "self:profile_read", "self:profile_update"]);
     for (const p of ROLE_PERMISSIONS.EMPLOYEE) expect(p.startsWith("self:") || p === "notification:read", p).toBe(true);
   });
 

@@ -29,6 +29,13 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   // shared public-application limit and the retention job (20261120000000_shared_limits_and_retention)
   app_my_employee_id: true, // employee self-service (20261121000000_employee_management)
   app_public_apply_allowed: true, app_remove_due_candidates: true, app_pending_file_removals: true, app_confirm_file_removed: true,
+  // attendance (20261122000000_attendance_shifts, 20261122000100_attendance_records): the only way to write attendance
+  app_has_permission: true, app_clock_in: true, app_clock_out: true, app_break: true, app_request_attendance_correction: true,
+  app_withdraw_attendance_correction: true, app_hr_record_attendance: true, app_hr_correct_attendance: true, app_hr_void_attendance: true,
+  app_decide_attendance_correction: true, app_remove_old_attendance_device_data: true,
+  att_org_timezone: false, guard_shift: false,
+  // standard shifts and shift history (20261122000400_standard_shifts_and_shift_history)
+  app_apply_standard_shifts: true, app_generate_standard_shifts: true, guard_shift_pattern: false, record_shift_change: false,
   // internal only
   app_remove_candidate_core: false, guard_application_candidate_removed: false, guard_employee_manager: false, record_employee_assignment: false, guard_employee_status: false, close_employee_assignment: false, app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,

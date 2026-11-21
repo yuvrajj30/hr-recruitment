@@ -121,6 +121,7 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
     ["self:profile_read", "View my own employee profile and work information"],
     ["self:profile_update", "Update my permitted personal details"],
     ["self:attendance_read", "View my own attendance"],
+    ["self:attendance_clock", "Clock in and out, record breaks and ask for attendance corrections"],
     ["self:leave_apply", "Apply for leave"],
     ["self:leave_read", "View my own leave balance and requests"],
     ["notification:read", "Receive my notifications"],

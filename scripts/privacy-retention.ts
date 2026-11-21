@@ -5,6 +5,7 @@
 // Meant to run once a day from a scheduler (Windows Task Scheduler, cron, or the hosting platform's jobs). It
 // connects with the app's own restricted account (DATABASE_URL), like the app.
 import "dotenv/config";
+import { generateStandardShifts, removeOldAttendanceDeviceData } from "@/lib/attendance/retention";
 import { getDb } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { runCandidateRetention } from "@/lib/recruitment/retention";
@@ -20,6 +21,12 @@ async function main() {
     if (r.candidatesFailed) console.log(`${r.candidatesFailed} candidate(s) could not be removed this time and will be retried (record ids in the app log).`);
     if (r.filesFailed) console.log(`${r.filesFailed} file(s) could not be deleted and will be retried.`);
     if (r.candidatesFailed || r.filesFailed) process.exitCode = 2;
+    // Attendance: device details (IP address, browser) of punches older than 90 days.
+    const devices = await removeOldAttendanceDeviceData(db);
+    console.log(devices === null ? "Attendance device details: not installed on this database yet." : `Removed device details from ${devices} attendance record(s) older than 90 days.`);
+    // Attendance: fill the coming two weeks of the rota from the standard shifts.
+    const shifts = await generateStandardShifts(db);
+    console.log(shifts === null ? "Standard shifts: not installed on this database yet." : `Added ${shifts} shift(s) to the rota from the standard shifts.`);
   } finally {
     await db.$disconnect();
   }

@@ -39,7 +39,7 @@ export const NAV_ITEMS: readonly NavItemDefinition[] = [
   { key: "employees", label: "Employees", href: "/employees", section: "workspace", status: "available", requiresAny: ["employee:read"] },
   { key: "recruitment", label: "Recruitment", href: "/recruitment", section: "workspace", status: "available", requiresAny: ["job:read", "application:read"] },
   { key: "interviews", label: "Interviews", href: "/interviews", section: "workspace", status: "available", requiresAny: ["interview:read"] },
-  { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "planned", requiresAny: ["self:attendance_read", "attendance:read"] },
+  { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "available", requiresAny: ["self:attendance_read", "attendance:read"] },
   { key: "leave", label: "Leave Management", href: "/leave", section: "workspace", status: "planned", requiresAny: ["self:leave_apply", "leave:read"] },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", section: "workspace", status: "planned", requiresAny: ["onboarding:read"] },
   { key: "performance", label: "Performance", href: "/performance", section: "workspace", status: "planned", requiresAny: ["self:profile_read", "employee:read"] },

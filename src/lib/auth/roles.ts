@@ -48,6 +48,7 @@ const SELF_SERVICE: readonly PermissionKey[] = [
   "self:profile_read",
   "self:profile_update",
   "self:attendance_read",
+  "self:attendance_clock",
   "self:leave_apply",
   "self:leave_read",
   "notification:read",
