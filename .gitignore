@@ -55,3 +55,7 @@ next-env.d.ts
 
 # Private uploaded files (candidate resumes). Never committed, never served directly.
 /storage/
+
+# Personal documents and screenshots dropped in the project root (never part of the app)
+/*.pdf
+/*.png
