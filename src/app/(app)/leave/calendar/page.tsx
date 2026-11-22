@@ -38,7 +38,8 @@ export default function LeaveCalendarPage(props: PageProps<"/leave/calendar">) {
 async function CalendarContent({ searchParams }: { searchParams: Promise<Query> }) {
   const auth = await getCurrentAuth();
   if (!auth) redirect("/login?next=%2Fleave%2Fcalendar&reason=expired");
-  if (!auth.permissions.has("leave:read")) {
+  const isHr = auth.permissions.has("leave:read");
+  if (!isHr && !auth.permissions.has("self:leave_read")) {
     return (
       <div className="space-y-6">
         <PageHeader title="Who is off" />
@@ -79,7 +80,7 @@ async function CalendarContent({ searchParams }: { searchParams: Promise<Query> 
   return (
     <div className="space-y-6">
       <PageHeader title="Who is off" description={monthLabel} />
-      <LeaveNav active="calendar" canSelf={auth.permissions.has("self:leave_read")} />
+      <LeaveNav active="calendar" canSelf={auth.permissions.has("self:leave_read")} canHr={isHr} />
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="secondary" size="sm" asChild>
@@ -105,16 +106,16 @@ async function CalendarContent({ searchParams }: { searchParams: Promise<Query> 
         <CardHeader>
           <div>
             <CardTitle>{monthLabel}</CardTitle>
-            <CardDescription>Approved leave and requests still waiting. Hover a cell for the leave type.</CardDescription>
+            <CardDescription>{isHr ? "Approved leave and requests still waiting. Hover a cell for the leave type." : "Approved leave in your organisation."}</CardDescription>
           </div>
         </CardHeader>
         {people.length === 0 ? (
-          <EmptyState icon={CalendarDays} title="Nobody is off this month." description="Approved leave and waiting requests show here." />
+          <EmptyState icon={CalendarDays} title="Nobody is off this month." description={isHr ? "Approved leave and waiting requests show here." : "Approved leave shows here."} />
         ) : (
           <>
-            <MonthStrip first={first} last={last} today={today} people={people} holidays={holidays} />
+            <MonthStrip first={first} last={last} today={today} people={people} holidays={holidays} linkPeople={isHr} />
             <CardBody className="border-t border-border">
-              <StripLegend />
+              <StripLegend showWaiting={isHr} />
             </CardBody>
           </>
         )}

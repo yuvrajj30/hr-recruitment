@@ -20,13 +20,14 @@ export function leaveRange(start: string, end: string, startHalf: boolean, endHa
   return `${dayLabel(start)}${startHalf ? " (½)" : ""} to ${dayLabel(end)}${endHalf ? " (½)" : ""}`;
 }
 
-// Links between the leave screens (callers decide who sees them: canSelf = self:leave_read; the rest need leave:read).
-export function LeaveNav({ active, canSelf }: { active?: "requests" | "calendar" | "setup"; canSelf: boolean }) {
+// Links between the leave screens. canSelf = self:leave_read (My leave); canHr = leave:read (requests and set-up).
+// Who is off is open to both.
+export function LeaveNav({ active, canSelf, canHr = true }: { active?: "requests" | "calendar" | "setup"; canSelf: boolean; canHr?: boolean }) {
   const items = [
     ...(canSelf ? [{ key: "me", href: "/leave", label: "My leave" }] : []),
-    { key: "requests", href: "/leave/requests", label: "Requests" },
+    ...(canHr ? [{ key: "requests", href: "/leave/requests", label: "Requests" }] : []),
     { key: "calendar", href: "/leave/calendar", label: "Who is off" },
-    { key: "setup", href: "/leave/setup", label: "Set-up" },
+    ...(canHr ? [{ key: "setup", href: "/leave/setup", label: "Set-up" }] : []),
   ];
   return (
     <nav aria-label="Leave" className="flex flex-wrap gap-2 text-[13px]">

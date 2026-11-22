@@ -61,7 +61,7 @@ async function LeaveContent() {
   return (
     <div className="space-y-6">
       <PageHeader title="Leave" description="Your balances, requests and the holidays ahead." />
-      {isHr && <LeaveNav canSelf />}
+      <LeaveNav canSelf canHr={isHr} />
 
       {!me.linked ? (
         <Card>

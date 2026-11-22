@@ -331,16 +331,26 @@ export async function getLeaveRequest(rawDb: Db, ctx: AuthContext, requestId: st
   }));
 }
 
-// The "who is off" calendar: approved leave, and (marked) requests still waiting, for HR only. Names, leave type
-// and halves; never the note or HR's decision note.
+// The "who is off" calendar. Never the note or HR's decision note.
+// - HR (leave:read): approved leave and (marked) requests still waiting, with the leave type and the request.
+// - Everyone else (self:leave_read): approved leave only, with names and days. The leave type, the employee code and
+//   the request stay hidden (they are null): the type can reveal sick leave (owner decision, 22 Nov 2026).
 export type WhoIsOffEntry = {
-  requestId: string; employeeId: string; employeeName: string; employeeCode: string; typeCode: string; typeName: string;
-  start: string; end: string; startHalf: boolean; endHalf: boolean; days: number; status: "APPROVED" | "PENDING";
+  requestId: string | null; employeeId: string; employeeName: string; employeeCode: string | null; typeCode: string | null; typeName: string | null;
+  start: string; end: string; startHalf: boolean; endHalf: boolean; days: number | null; status: "APPROVED" | "PENDING";
 };
 export async function getWhoIsOff(rawDb: Db, ctx: AuthContext, from: string, to: string): Promise<WhoIsOffEntry[]> {
-  requirePermission(ctx, "leave:read");
+  requireAnyPermission(ctx, ["leave:read", "self:leave_read"]);
   const organizationId = requireOrganizationId(ctx);
   if (!isDay(from) || !isDay(to) || to < from || to > addDays(from, 62)) throw invalid("Choose a period of up to two months.");
+  if (!ctx.permissions.has("leave:read")) {
+    const rows = await staffDb(rawDb, ctx).$queryRaw<{ employee_id: string; employee_name: string; start_day: Date; end_day: Date; start_half: boolean; end_half: boolean }[]>`
+      SELECT employee_id::text AS employee_id, employee_name, start_day, end_day, start_half, end_half FROM app_who_is_off(${from}::date, ${to}::date)`;
+    return rows.map((r) => ({
+      requestId: null, employeeId: r.employee_id, employeeName: r.employee_name, employeeCode: null, typeCode: null, typeName: null,
+      start: dayText(r.start_day), end: dayText(r.end_day), startHalf: r.start_half, endHalf: r.end_half, days: null, status: "APPROVED",
+    }));
+  }
   const rows = await staffDb(rawDb, ctx).leaveRequest.findMany({
     where: { organizationId, status: { in: ["APPROVED", "PENDING"] }, startDay: { lte: dayValue(to) }, endDay: { gte: dayValue(from) } },
     orderBy: [{ startDay: "asc" }, { createdAt: "asc" }],

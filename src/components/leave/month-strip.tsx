@@ -7,7 +7,7 @@ import type { WhoIsOffEntry } from "@/lib/leave/leave";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 
-export type StripPerson = { employeeId: string; name: string; code: string; entries: WhoIsOffEntry[] };
+export type StripPerson = { employeeId: string; name: string; code: string | null; entries: WhoIsOffEntry[] };
 
 function cellOf(entries: WhoIsOffEntry[], day: string): { entry: WhoIsOffEntry; half: boolean } | null {
   // An approved entry wins over a waiting one on the same day.
@@ -20,7 +20,8 @@ function cellOf(entries: WhoIsOffEntry[], day: string): { entry: WhoIsOffEntry; 
   return { entry, half };
 }
 
-export function MonthStrip({ first, last, today, people, holidays }: { first: string; last: string; today: string; people: StripPerson[]; holidays: Record<string, string> }) {
+// linkPeople: HR links each name to the person's leave page; staff see plain names.
+export function MonthStrip({ first, last, today, people, holidays, linkPeople = true }: { first: string; last: string; today: string; people: StripPerson[]; holidays: Record<string, string>; linkPeople?: boolean }) {
   const days: string[] = [];
   for (let d = first; d <= last; d = addDays(d, 1)) days.push(d);
   const weekday = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
@@ -53,10 +54,14 @@ export function MonthStrip({ first, last, today, people, holidays }: { first: st
           {people.map((p) => (
             <tr key={p.employeeId}>
               <th scope="row" className="sticky left-0 z-10 min-w-40 border-b border-border bg-surface px-5 py-1.5 text-left text-[13px] font-normal">
-                <Link href={`/leave/employees/${p.employeeId}`} className="font-medium text-accent-fg hover:underline">
-                  {p.name}
-                </Link>
-                <span className="ml-1.5 text-xs text-fg-muted">{p.code}</span>
+                {linkPeople ? (
+                  <Link href={`/leave/employees/${p.employeeId}`} className="font-medium text-accent-fg hover:underline">
+                    {p.name}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-fg">{p.name}</span>
+                )}
+                {p.code && <span className="ml-1.5 text-xs text-fg-muted">{p.code}</span>}
               </th>
               {days.map((d) => {
                 const c = cellOf(p.entries, d);
@@ -64,7 +69,7 @@ export function MonthStrip({ first, last, today, people, holidays }: { first: st
                 const base = `border-b border-border p-0.5 ${d === today ? "bg-accent-soft/60" : holiday ? "bg-surface-muted" : ""}`;
                 if (!c) return <td key={d} className={base} title={holiday ?? undefined} />;
                 const waiting = c.entry.status === "PENDING";
-                const title = `${c.entry.typeCode}, ${waiting ? "waiting for approval" : "approved"}${c.half ? ", half day" : ""}`;
+                const title = `${c.entry.typeCode ? `${c.entry.typeCode}, ` : "Off, "}${waiting ? "waiting for approval" : "approved"}${c.half ? ", half day" : ""}`;
                 const fill = waiting ? "border border-dashed border-accent bg-accent-soft" : "bg-accent";
                 return (
                   <td key={d} className={base} title={title}>
@@ -83,15 +88,17 @@ export function MonthStrip({ first, last, today, people, holidays }: { first: st
   );
 }
 
-export function StripLegend() {
+export function StripLegend({ showWaiting = true }: { showWaiting?: boolean }) {
   return (
     <ul className="flex flex-wrap gap-x-5 gap-y-1.5 text-xs text-fg-muted" aria-label="Legend">
       <li className="flex items-center gap-1.5">
         <span className="block h-3 w-5 rounded-sm bg-accent" aria-hidden /> Approved
       </li>
-      <li className="flex items-center gap-1.5">
-        <span className="block h-3 w-5 rounded-sm border border-dashed border-accent" aria-hidden /> Waiting for approval
-      </li>
+      {showWaiting && (
+        <li className="flex items-center gap-1.5">
+          <span className="block h-3 w-5 rounded-sm border border-dashed border-accent" aria-hidden /> Waiting for approval
+        </li>
+      )}
       <li className="flex items-center gap-1.5">
         <span className="relative block h-3 w-5 overflow-hidden rounded-sm bg-surface-muted" aria-hidden>
           <span className="absolute inset-y-0 left-0 w-1/2 bg-accent" />

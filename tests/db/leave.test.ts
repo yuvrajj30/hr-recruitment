@@ -547,4 +547,33 @@ describe.skipIf(!enabled)("leave (test database)", () => {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Who is off, for staff (migration 20261123000400_who_is_off_for_staff, owner decision 22 Nov 2026)
+  // -------------------------------------------------------------------------
+  describe("who is off for staff", { timeout: 90_000 }, () => {
+    it("shows every member approved leave of their own organisation with names and dates only", async () => {
+      const a = w.a;
+      const b = w.b;
+      const approved = await ok("a", "hr", `SELECT app_hr_record_leave($1, $2, $3::date, $4::date, true, false, 'Private reason') AS id`, [a.e.emp2, await typeIdCached("a", "UL"), d(25), d(26)]);
+      const pending = await request("a", "emp", "UL", d(26), d(26), false, false, "Another private reason");
+      expect(pending.error).toBeUndefined();
+      const other = await ok("b", "hr", `SELECT app_hr_record_leave($1, $2, $3::date, $3::date, false, false, NULL) AS id`, [b.e.emp2, await typeIdCached("b", "UL"), d(25)]);
+      try {
+        const rows = (await ok("a", "emp", `SELECT * FROM app_who_is_off($1::date, $2::date)`, [d(24), d(27)]));
+        // Exactly these columns: no leave type (it can reveal sick leave), no note, no days balance, no status.
+        expect(rows).toEqual([{ employee_id: a.e.emp2, employee_name: "Person emp2 a", start_day: expect.any(Date), end_day: expect.any(Date), start_half: true, end_half: false }]);
+        // Pending requests and other organisations never show; neither do people outside the range.
+        expect(await ok("a", "emp", `SELECT * FROM app_who_is_off($1::date, $1::date)`, [d(27)])).toEqual([]);
+        expect((await ok("b", "emp", `SELECT employee_id FROM app_who_is_off($1::date, $2::date)`, [d(24), d(27)])).map((r) => r.employee_id)).toEqual([b.e.emp2]);
+        // Not signed in: nothing; ranges longer than two months are refused.
+        expect((await as("a", "public", `SELECT * FROM app_who_is_off($1::date, $2::date)`, [d(24), d(27)])).error).toMatch(/not allowed/);
+        expect((await as("a", "emp", `SELECT * FROM app_who_is_off($1::date, $1::date + 63)`, [d(0)])).error).toMatch(/leave_bad_period/);
+      } finally {
+        await ok("a", "hr", `SELECT app_cancel_leave($1, 'Test cleanup')`, [approved[0]!.id]);
+        await ok("a", "emp", `SELECT app_withdraw_leave($1)`, [pending.rows[0]!.id]);
+        await ok("b", "hr", `SELECT app_cancel_leave($1, 'Test cleanup')`, [other[0]!.id]);
+      }
+    });
+  });
 });

@@ -38,7 +38,7 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   app_apply_standard_shifts: true, app_generate_standard_shifts: true, guard_shift_pattern: false, record_shift_change: false,
   // leave (20261123000000_leave, 20261123000100_leave_functions): the only way to write requests and the ledger
   app_request_leave: true, app_withdraw_leave: true, app_decide_leave: true, app_hr_record_leave: true, app_cancel_leave: true,
-  app_adjust_leave: true, app_leave_preview: true, app_leave_housekeeping: true, seed_leave_types_for_new_org: false,
+  app_adjust_leave: true, app_leave_preview: true, app_leave_housekeeping: true, app_who_is_off: true, seed_leave_types_for_new_org: false,
   // internal only
   app_remove_candidate_core: false, guard_application_candidate_removed: false, guard_employee_manager: false, record_employee_assignment: false, guard_employee_status: false, close_employee_assignment: false, app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,

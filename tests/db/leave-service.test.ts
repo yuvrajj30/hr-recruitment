@@ -102,7 +102,6 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
   it("checks permissions before asking the database", async () => {
     const e = ctx.emp;
     await expect(listLeaveRequests(db, e, "PENDING")).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(getWhoIsOff(db, e, d(0), d(7))).rejects.toBeInstanceOf(ForbiddenError);
     await expect(getEmployeeLeave(db, e, emp.emp2, 2026)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(decideLeave(deps(), e, type.CL!, true, null)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(hrRecordLeave(deps(), e, emp.emp2, input("UL", d(1), d(1)))).rejects.toBeInstanceOf(ForbiddenError);
@@ -119,9 +118,11 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
     let mine = await getMyLeave(db, ctx.emp, localDay(new Date(), TZ));
     expect(mine).toMatchObject({ linked: true, hasStandard: false });
     expect(mine.notConfigured.sort()).toEqual(["CL", "CO", "EL", "SL"]);
-    await saveLeaveType(deps(), ctx.hr, type.CL!, { code: "IGNORED", name: "Casual leave", paid: false, accrual: "YEARLY", daysPerYear: 12, carryOverMax: 0, noteRequired: false, isActive: true });
+    // Credited by HR only (no accrual): the daily job, which other test files run for every organisation, then never
+    // adds a grant here, so the balances below stay exact.
+    await saveLeaveType(deps(), ctx.hr, type.CL!, { code: "IGNORED", name: "Casual leave", paid: false, accrual: "NONE", daysPerYear: 0, carryOverMax: 3, noteRequired: false, isActive: true });
     const cl = (await listLeaveTypes(db, ctx.hr)).find((t) => t.id === type.CL)!;
-    expect(cl).toMatchObject({ code: "CL", paid: true, daysPerYear: 12, configured: true }); // code and paid never change
+    expect(cl).toMatchObject({ code: "CL", paid: true, name: "Casual leave", accrual: "NONE", carryOverMax: 3, configured: true }); // code and paid never change
     mine = await getMyLeave(db, ctx.emp, localDay(new Date(), TZ));
     expect(mine.notConfigured).not.toContain("CL");
     // A new type gets its own code.
@@ -159,9 +160,15 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
     });
     expect(off[1]).toMatchObject({ employeeId: emp.emp2, typeCode: "UL", start: d(5), end: d(5), startHalf: true, days: 0.5, status: "PENDING" });
     expect(JSON.stringify(off)).not.toMatch(/Private family matter|Doctor visit|take care/);
-    // Another organisation's HR sees none of it; an employee may not ask.
+    // Another organisation's HR sees none of it.
     expect(await getWhoIsOff(db, ctx.hrB, d(0), d(10))).toEqual([]);
-    await expect(getWhoIsOff(db, ctx.emp, d(0), d(10))).rejects.toBeInstanceOf(ForbiddenError);
+    // Staff see who is off and when (approved only), without the leave type, notes or requests still waiting.
+    const staffView = await getWhoIsOff(db, ctx.emp2, d(0), d(10));
+    expect(staffView).toEqual([{
+      requestId: null, employeeId: emp.emp, employeeName: "emp person", employeeCode: null, typeCode: null, typeName: null,
+      start: d(3), end: d(4), startHalf: false, endHalf: false, days: null, status: "APPROVED",
+    }]);
+    expect(JSON.stringify(staffView)).not.toMatch(/Private family matter|Casual|CL/);
     // An employee's own page shows only their own requests, with their own balance.
     const mine = await getMyLeave(db, ctx.emp2, localDay(new Date(), TZ));
     expect(mine.requests.map((r) => r.id)).toContain(pendingId);

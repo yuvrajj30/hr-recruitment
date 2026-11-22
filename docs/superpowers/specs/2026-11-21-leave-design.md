@@ -134,7 +134,7 @@ Unpaid: no balance check at all. Comp-off: accrual NONE; balance only from HR ad
 **Who sees what:**
 - an employee sees their own balances, ledger and requests;
 - HR (`leave:read`) sees the organisation's;
-- the "who is off" calendar shows names and leave type, never the reason;
+- the "who is off" calendar shows names and leave type, never the reason. **Owner decision, 22 Nov 2026:** every member sees it; staff see approved leave with names and days only (no leave type, since it can reveal sick leave, and no requests still waiting); HR also sees the type and waiting requests (migration 20261123000400_who_is_off_for_staff);
 - holidays and leave types are readable by every signed-in member of the organisation.
 
 **Audit:** the ledger and the request decisions are the authoritative trail (append-only, written by the database). HR actions also get audit_log rows.
