@@ -71,6 +71,8 @@ describe.skipIf(!enabled)("leave (test database)", () => {
         await raw.query(`INSERT INTO employee_shift_patterns (organization_id, employee_id, standard_shift, work_days) VALUES ($1, $2, 'MORNING', '{1,2,3,4,5,6}')`, [org.id, e[who]]);
       }
       w[k] = { org: org.id, user, member, outlet, e, type: {} };
+      // The five types are seeded with the organisation; cache their ids now so no test depends on running after another.
+      for (const t of (await raw.query(`SELECT id, code FROM leave_types WHERE organization_id = $1`, [org.id])).rows) w[k].type[t.code] = t.id;
     }
   }, 90_000);
 
@@ -269,18 +271,24 @@ describe.skipIf(!enabled)("leave (test database)", () => {
     it("restores only the days not yet taken when approved leave is cancelled (Review Focus 3)", async () => {
       const a = w.a;
       const today = (await raw.query(`SELECT (now() AT TIME ZONE $1)::date::text AS d`, [TZ])).rows[0].d as string;
-      // HR records CL with enough balance, from yesterday to tomorrow.
-      await adjust("a", "emp2", "CL", Number(today.slice(0, 4)), 5);
-      const rec = await as("a", "hr", `SELECT app_hr_record_leave($1, $2, $3::date - 1, $3::date + 1, false, false, NULL) AS id`, [a.e.emp2, a.type.CL, today]);
-      expect(rec.error).toBeUndefined();
-      const days = Number((await req(rec.rows[0]!.id)).days);
-      // The employee can no longer cancel (it has started); HR can, and only today and later come back.
-      expect((await as("a", "emp2", `SELECT app_cancel_leave($1, 'Changed plans')`, [rec.rows[0]!.id])).error).toMatch(/leave_already_started/);
-      await ok("a", "hr", `SELECT app_cancel_leave($1, 'Came back early')`, [rec.rows[0]!.id]);
-      const restored = Number((await raw.query(`SELECT COALESCE(sum(days), 0) AS r FROM leave_ledger WHERE request_id = $1 AND kind = 'RESTORED'`, [rec.rows[0]!.id])).rows[0].r);
-      const pastDays = Number((await raw.query(`SELECT leave_count_days($1, $2, $3::date - 1, $3::date - 1, false, false) AS n`, [a.org, a.e.emp2, today])).rows[0].n);
-      expect(restored).toBe(days - pastDays);
-      expect((await req(rec.rows[0]!.id)).status).toBe("CANCELLED");
+      const y = Number(today.slice(0, 4));
+      // HR records CL with enough balance, from yesterday to tomorrow, kept inside this year (a request cannot cross
+      // 31 December, so on 1 January it starts today and on 31 December it ends today).
+      const start = (await raw.query(`SELECT GREATEST($1::date - 1, make_date($2, 1, 1))::text AS d`, [today, y])).rows[0].d as string;
+      const end = (await raw.query(`SELECT LEAST($1::date + 1, make_date($2, 12, 31))::text AS d`, [today, y])).rows[0].d as string;
+      await workingEveryDay("a", "emp2", async () => {
+        await adjust("a", "emp2", "CL", y, 5);
+        const rec = await as("a", "hr", `SELECT app_hr_record_leave($1, $2, $3::date, $4::date, false, false, NULL) AS id`, [a.e.emp2, a.type.CL, start, end]);
+        expect(rec.error).toBeUndefined();
+        const days = Number((await req(rec.rows[0]!.id)).days);
+        // The employee can no longer cancel (it has started); HR can, and only today and later come back.
+        expect((await as("a", "emp2", `SELECT app_cancel_leave($1, 'Changed plans')`, [rec.rows[0]!.id])).error).toMatch(/leave_already_started/);
+        await ok("a", "hr", `SELECT app_cancel_leave($1, 'Came back early')`, [rec.rows[0]!.id]);
+        const restored = Number((await raw.query(`SELECT COALESCE(sum(days), 0) AS r FROM leave_ledger WHERE request_id = $1 AND kind = 'RESTORED'`, [rec.rows[0]!.id])).rows[0].r);
+        const pastDays = start < today ? (Date.parse(today) - Date.parse(start)) / 86_400_000 : 0; // every day is a working day here
+        expect(restored).toBe(days - pastDays);
+        expect((await req(rec.rows[0]!.id)).status).toBe("CANCELLED");
+      });
     });
 
     it("grants yearly leave pro rata, accrues monthly once per counting month, and closes the year on 1 February", async () => {
@@ -415,8 +423,10 @@ describe.skipIf(!enabled)("leave (test database)", () => {
 
     it("cancels shifts on full leave days, keeps half-day shifts, keeps the rota fill away, and refills after cancelling", async () => {
       const a = w.a;
-      // A Monday + Tuesday within the 14 days the standard rota fills (and in one year).
-      const near = (await raw.query(`SELECT (date_trunc('week', (now() AT TIME ZONE $1)::date) + interval '7 days')::date::text AS d`, [TZ])).rows[0].d as string;
+      // Two working days in a row within the 14 days the standard rota fills, in one year: next Monday and Tuesday,
+      // or Tuesday and Wednesday when that Monday is 31 December (a request cannot cross the year).
+      const monNext = (await raw.query(`SELECT (date_trunc('week', (now() AT TIME ZONE $1)::date) + interval '7 days')::date::text AS d`, [TZ])).rows[0].d as string;
+      const near = monNext.slice(0, 4) === addDays(monNext, 1).slice(0, 4) ? monNext : addDays(monNext, 1);
       const tue = addDays(near, 1);
       await ok("a", "hr", `SELECT app_apply_standard_shifts()`);
       expect((await shiftsOn(a.e.emp, near)).map((s) => s.status)).toEqual(["PLANNED"]);
@@ -429,8 +439,50 @@ describe.skipIf(!enabled)("leave (test database)", () => {
       await ok("a", "hr", `SELECT app_apply_standard_shifts()`);
       expect((await shiftsOn(a.e.emp, near)).map((s) => s.status)).toEqual(["CANCELLED"]); // not refilled
       await ok("a", "emp", `SELECT app_cancel_leave($1, 'Plans changed')`, [r.rows[0]!.id]);
+      expect((await shiftsOn(a.e.emp, near)).map((s) => s.status)).toEqual(["CANCELLED", "PLANNED"]); // refilled at once
       await ok("a", "hr", `SELECT app_apply_standard_shifts()`);
-      expect((await shiftsOn(a.e.emp, near)).map((s) => s.status)).toEqual(["CANCELLED", "PLANNED"]); // refilled
+      expect((await shiftsOn(a.e.emp, near)).map((s) => s.status)).toEqual(["CANCELLED", "PLANNED"]); // and only once
+    });
+
+    it("keeps the shift on a holiday inside leave and brings cancelled shifts back as soon as HR cancels the leave", async () => {
+      const a = w.a;
+      const monNext = (await raw.query(`SELECT (date_trunc('week', (now() AT TIME ZONE $1)::date) + interval '7 days')::date::text AS d`, [TZ])).rows[0].d as string;
+      const near = monNext.slice(0, 4) === addDays(monNext, 1).slice(0, 4) ? monNext : addDays(monNext, 1);
+      const next = addDays(near, 1);
+      await ok("a", "hr", `SELECT app_apply_standard_shifts()`);
+      await raw.query(`INSERT INTO holidays (organization_id, day, name) VALUES ($1, $2::date, 'Holiday inside leave')`, [a.org, near]);
+      try {
+        await configure("a", "CL", 12);
+        await adjust("a", "emp2", "CL", Number(near.slice(0, 4)), 5);
+        const r = await request("a", "emp2", "CL", near, next);
+        expect(r.error).toBeUndefined();
+        expect(Number((await req(r.rows[0]!.id)).days)).toBe(1); // the holiday is not charged
+        await ok("a", "hr", `SELECT app_decide_leave($1, true, NULL)`, [r.rows[0]!.id]);
+        expect((await shiftsOn(a.e.emp2, near)).map((s) => s.status)).toEqual(["PLANNED"]); // holiday: not cancelled for leave
+        expect(await shiftsOn(a.e.emp2, next)).toMatchObject([{ status: "CANCELLED", cancel_reason: "On leave" }]);
+        await ok("a", "hr", `SELECT app_cancel_leave($1, 'Plans changed')`, [r.rows[0]!.id]);
+        expect((await shiftsOn(a.e.emp2, next)).map((s) => s.status)).toEqual(["CANCELLED", "PLANNED"]); // back at once
+        expect((await shiftsOn(a.e.emp2, near)).map((s) => s.status)).toEqual(["PLANNED"]);
+      } finally {
+        await raw.query(`DELETE FROM holidays WHERE organization_id = $1 AND name = 'Holiday inside leave'`, [a.org]);
+      }
+    });
+
+    it("does not count a weekly off inside leave as a day on leave", async () => {
+      const a = w.a;
+      // d(12) Saturday, d(13) Sunday (weekly off), d(14) Monday.
+      await configure("a", "CL", 12);
+      await adjust("a", "emp2", "CL", year(), 3);
+      const r = await request("a", "emp2", "CL", d(12), d(14));
+      expect(r.error).toBeUndefined();
+      expect(Number((await req(r.rows[0]!.id)).days)).toBe(2);
+      await ok("a", "hr", `SELECT app_decide_leave($1, true, NULL)`, [r.rows[0]!.id]);
+      try {
+        const onLeave = (await raw.query(`SELECT leave_on_full_leave($1, x::date) AS full_leave FROM unnest($2::text[]) AS x`, [a.e.emp2, [d(12), d(13), d(14)]])).rows.map((x) => x.full_leave);
+        expect(onLeave).toEqual([true, false, true]);
+      } finally {
+        await ok("a", "hr", `SELECT app_cancel_leave($1, 'Test cleanup')`, [r.rows[0]!.id]);
+      }
     });
 
     it("refuses clock-in on a full leave day", async () => {

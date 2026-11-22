@@ -304,7 +304,7 @@ export async function listLeaveRequests(rawDb: Db, ctx: AuthContext, status: "PE
 
 export type LeaveRequestDetail = LeaveRequestView & {
   preview: PreviewView | null; // HR, waiting requests only
-  // Shifts cancelled because of this leave. Standard shifts nobody changed come back by themselves if the leave is
+  // Shifts cancelled because of this leave. Standard shifts nobody changed come back at once if the leave is
   // cancelled; hand-planned or changed ones (comesBack false) do not, and HR plans them again if needed.
   cancelledShifts: { id: string; startsAt: Date; endsAt: Date; outlet: string; source: "MANUAL" | "STANDARD"; edited: boolean; comesBack: boolean }[];
 };

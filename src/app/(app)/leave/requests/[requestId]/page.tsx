@@ -154,7 +154,7 @@ async function RequestContent({ params }: { params: Promise<{ requestId: string 
                     These shifts were planned by hand and will not come back by themselves if you cancel: {handPlanned.map((s) => `${when(s.startsAt)} at ${s.outlet}`).join(", ")}. Plan them again on the rota if needed.
                   </Alert>
                 )}
-                {automatic.length > 0 && <p className="text-[13px] text-fg-muted">Standard shifts on these days come back automatically.</p>}
+                {automatic.length > 0 && <p className="text-[13px] text-fg-muted">Standard shifts on these days come back as soon as you cancel.</p>}
               </div>
             </CancelLeaveForm>
           </CardBody>

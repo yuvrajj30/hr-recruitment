@@ -210,7 +210,8 @@ export async function withdrawRequest(deps: AttendanceDeps, ctx: AuthContext, re
 export type DayRow = { employeeId: string; employeeName: string; employeeCode: string; shifts: (ShiftView & { missed: boolean })[]; records: RecordView[] };
 // onLeave: approved leave that day (needs leave:read too; without it the database shows none). half: a half day,
 // so that person's shift stays planned. A shift cancelled because of leave is CANCELLED, so it is never "missed".
-export type DayLeave = { employeeId: string; employeeName: string; typeCode: string; half: boolean };
+// dayOff: the day is a holiday or the person's weekly off inside a longer leave: not charged and not "on leave".
+export type DayLeave = { employeeId: string; employeeName: string; typeCode: string; half: boolean; dayOff: "holiday" | "weekly_off" | null };
 export type DayView = { day: string; rows: DayRow[]; attention: RecordView[]; pendingRequests: number; onLeave: DayLeave[] };
 
 export async function getDay(rawDb: Db, ctx: AuthContext, day: string, timeZone: string, now: Date, outletId: string | null): Promise<DayView> {
@@ -243,14 +244,26 @@ export async function getDay(rawDb: Db, ctx: AuthContext, day: string, timeZone:
   const leave = ctx.permissions.has("leave:read")
     ? await db.leaveRequest.findMany({
       where: { organizationId, status: "APPROVED", startDay: { lte: dayDate }, endDay: { gte: dayDate }, ...(outlet ? { employee: { outletId: outlet } } : {}) },
-      select: { employeeId: true, startDay: true, endDay: true, startHalf: true, endHalf: true, employee: { select: { fullName: true } }, leaveType: { select: { code: true } } },
+      select: { employeeId: true, startDay: true, endDay: true, startHalf: true, endHalf: true, employee: { select: { fullName: true, outletId: true } }, leaveType: { select: { code: true } } },
     })
     : [];
+  // Holidays (organisation-wide or at the person's home outlet) and weekly offs, for the people on leave that day.
+  const [holidays, patterns] = leave.length
+    ? await db.$transaction(async (tx) => [
+      await tx.holiday.findMany({ where: { organizationId, day: dayDate }, select: { outletId: true } }),
+      await tx.employeeShiftPattern.findMany({ where: { organizationId, employeeId: { in: leave.map((l) => l.employeeId) } }, select: { employeeId: true, workDays: true } }),
+    ] as const)
+    : [[], []] as const;
+  const isoDow = ((dayDate.getUTCDay() + 6) % 7) + 1; // Monday 1 .. Sunday 7
+  const workDays = new Map(patterns.map((p) => [p.employeeId, p.workDays]));
   const onLeave = leave.map((l) => {
     const first = l.startDay.toISOString().slice(0, 10) === day;
     const last = l.endDay.toISOString().slice(0, 10) === day;
     const half = first && last ? l.startHalf || l.endHalf : (first && l.startHalf) || (last && l.endHalf);
-    return { employeeId: l.employeeId, employeeName: l.employee.fullName, typeCode: l.leaveType.code, half };
+    const holiday = holidays.some((h) => h.outletId === null || h.outletId === l.employee.outletId);
+    const weeklyOff = workDays.has(l.employeeId) && !workDays.get(l.employeeId)!.includes(isoDow);
+    const dayOff: DayLeave["dayOff"] = holiday ? "holiday" : weeklyOff ? "weekly_off" : null;
+    return { employeeId: l.employeeId, employeeName: l.employee.fullName, typeCode: l.leaveType.code, half, dayOff };
   }).sort((a, b) => a.employeeName.localeCompare(b.employeeName));
   const byEmployee = new Map<string, DayRow>();
   const row = (id: string, name: string, code: string) => {

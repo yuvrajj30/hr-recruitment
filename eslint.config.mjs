@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local helper scripts (git-ignored, not part of the app).
+    ".dist/**",
     // Code written by Prisma (never edited by hand).
     "src/generated/**",
     // One-off Milestone 2 migration helper (plain Node script, not part of the app).

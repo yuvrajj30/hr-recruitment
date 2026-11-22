@@ -133,7 +133,10 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
   });
 
   it("splits a request over 31 December into one request per year, keeping the halves at the ends", async () => {
-    const y = Number(localDay(new Date(), TZ).slice(0, 4));
+    // This year's 30 December to next year's 2 January, or last year's in the first week of January (a request may be
+    // at most 365 days ahead and 31 days back).
+    const today = localDay(new Date(), TZ);
+    const y = Number(today.slice(0, 4)) - (today.slice(5) <= "01-07" ? 1 : 0);
     const ids = await requestLeave(deps(), ctx.emp2, input("UL", `${y}-12-30`, `${y + 1}-01-02`, { endHalf: true }));
     expect(ids).toHaveLength(2);
     const rows = (await raw.query(`SELECT start_day::text s, end_day::text e, start_half, end_half, days::float FROM leave_requests WHERE id = ANY($1) ORDER BY start_day`, [ids])).rows;
@@ -178,7 +181,7 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
     expect(empPage.balances.find((x) => x.typeCode === "CL" && x.year === Number(d(3).slice(0, 4)))).toMatchObject({ credited: 5, taken: 2, pending: 0, balance: 3, available: 3 });
     // The attendance day lists approved leave (not the pending half day).
     const day = await getDay(db, ctx.hr, d(3), TZ, new Date(), null);
-    expect(day.onLeave).toEqual([{ employeeId: emp.emp, employeeName: "emp person", typeCode: "CL", half: false }]);
+    expect(day.onLeave).toEqual([{ employeeId: emp.emp, employeeName: "emp person", typeCode: "CL", half: false, dayOff: null }]);
     expect((await getDay(db, ctx.hr, d(5), TZ, new Date(), null)).onLeave).toEqual([]);
     // HR's own view of one person: the ledger lines with their reasons.
     const one = await getEmployeeLeave(db, ctx.hr, emp.emp, Number(d(3).slice(0, 4)));
@@ -186,6 +189,18 @@ describe.skipIf(!enabled)("leave service (test database)", { timeout: 90_000 }, 
     expect(one.ledger[0]).toMatchObject({ reason: "Opening balance from the paper register", createdBy: "hr person" });
     await withdrawLeave(deps(), ctx.emp2, pendingId!);
     await cancelLeave(deps(), ctx.hr, approvedId!, "Test cleanup");
+  });
+
+  it("shows a holiday inside leave as a holiday on the day review, not as leave", async () => {
+    await saveHoliday(deps(), ctx.hr, { day: d(13), name: "Festival inside leave", outletId: null });
+    const [id] = await hrRecordLeave(deps(), ctx.hr, emp.emp2, input("UL", d(12), d(13)));
+    try {
+      const entry = { employeeId: emp.emp2, employeeName: "emp2 person", typeCode: "UL", half: false };
+      expect((await getDay(db, ctx.hr, d(12), TZ, new Date(), null)).onLeave).toEqual([{ ...entry, dayOff: null }]);
+      expect((await getDay(db, ctx.hr, d(13), TZ, new Date(), null)).onLeave).toEqual([{ ...entry, dayOff: "holiday" }]);
+    } finally {
+      await cancelLeave(deps(), ctx.hr, id!, "Test cleanup");
+    }
   });
 
   it("lets HR see the recount and balance impact before deciding (owner test 3)", async () => {

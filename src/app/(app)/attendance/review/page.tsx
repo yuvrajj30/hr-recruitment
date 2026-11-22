@@ -58,9 +58,11 @@ async function ReviewContent({ searchParams }: { searchParams: Promise<Query> })
   const [view, rota] = await Promise.all([getDay(rt.db, auth, day, tz, now, outlet || null), getRota(rt.db, auth, dayRange(day, tz), null)]);
   const link = (d: string) => `/attendance/review?day=${d}${outlet ? `&outlet=${encodeURIComponent(outlet)}` : ""}`;
   const dayLabel = formatDate(dayRange(day, tz).start, tz);
-  const leaveBadge = (l: { typeCode: string; half: boolean }) => (l.half ? `Half day leave: ${l.typeCode}` : `On leave: ${l.typeCode}`);
+  // A holiday or weekly off inside a longer leave is not a leave day (not charged): say what the day is.
+  const leaveBadge = (l: { typeCode: string; half: boolean; dayOff: "holiday" | "weekly_off" | null }) =>
+    l.dayOff === "holiday" ? "Holiday" : l.dayOff === "weekly_off" ? "Weekly off" : l.half ? `Half day leave: ${l.typeCode}` : `On leave: ${l.typeCode}`;
   const rowIds = new Set(view.rows.map((r) => r.employeeId));
-  const leaveOnly = view.onLeave.filter((l) => !rowIds.has(l.employeeId));
+  const leaveOnly = view.onLeave.filter((l) => !rowIds.has(l.employeeId) && l.dayOff === null);
 
   return (
     <div className="space-y-6">
@@ -166,7 +168,7 @@ async function ReviewContent({ searchParams }: { searchParams: Promise<Query> })
                       {view.onLeave
                         .filter((l) => l.employeeId === row.employeeId)
                         .map((l) => (
-                          <Badge key={l.typeCode} tone="accent" className="mt-1">
+                          <Badge key={l.typeCode} tone={l.dayOff ? "neutral" : "accent"} className="mt-1">
                             {leaveBadge(l)}
                           </Badge>
                         ))}
