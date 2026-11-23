@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronDown, LogOut, MonitorX } from "lucide-react";
+import { ChevronDown, LogOut, MonitorX, UserRound } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Avatar } from "@/components/ui/avatar";
@@ -62,6 +63,13 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
             <span className="block truncate text-[13px] font-semibold text-fg">{name}</span>
             <span className="block truncate text-xs font-normal text-fg-muted">{email}</span>
           </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/me">
+              <UserRound aria-hidden />
+              My account
+            </Link>
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={busy} onSelect={() => signOut(false)}>
             <LogOut aria-hidden />

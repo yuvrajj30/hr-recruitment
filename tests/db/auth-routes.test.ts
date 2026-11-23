@@ -17,9 +17,13 @@ import { createConcurrencyGate } from "@/lib/auth/concurrency-gate";
 import type { AuthRuntime } from "@/lib/auth/runtime";
 import { createSession } from "@/lib/auth/session-store";
 import { createDb, type Db } from "@/lib/db";
+import { ROLE_PERMISSIONS, type RoleKey } from "@/lib/auth/roles";
+import { realRoleIds } from "./roles-helper";
 import { EnvError } from "@/lib/env";
 import { guarded } from "@/lib/http/handler";
 import { hashIdentifier } from "@/lib/security/tokens";
+import bcrypt from "bcryptjs";
+import { signInWithDatabase } from "@/lib/auth/login-service";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
@@ -33,7 +37,8 @@ const at = (ms: number) => new Date(t0.getTime() + ms);
 const timings = sessionTimings({ SESSION_IDLE_MINUTES: 60, SESSION_ABSOLUTE_HOURS: 12, SESSION_TOUCH_INTERVAL_SECONDS: 60 });
 const SECRET = "route-test-secret-".repeat(3);
 const PASSWORD = "Correct-Horse-Battery-9";
-const FAKE_HASH = `fake:${PASSWORD}`;
+// A real bcrypt hash (the database checks passwords itself now); a low cost keeps the tests quick.
+const FAKE_HASH = bcrypt.hashSync(PASSWORD, 4);
 const rnd = () => randomBytes(4).toString("hex");
 
 describe.skipIf(!enabled)("auth endpoints (test database)", () => {
@@ -41,13 +46,13 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
   let db: Db;
   const userIds: string[] = [];
   const orgIds: string[] = [];
-  const roleIds: string[] = [];
-  const permissionIds: string[] = [];
   const hashes: string[] = [];
+  let role: Record<RoleKey, string>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 3 });
     db = createDb(runtimeUrl!, { max: 4 });
+    role = await realRoleIds(owner);
   });
   afterAll(async () => {
     if (owner) {
@@ -56,8 +61,6 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       await owner.organizationMember.deleteMany({ where: { userId: { in: userIds } } });
       await owner.organization.deleteMany({ where: { id: { in: orgIds } } });
       await owner.user.deleteMany({ where: { id: { in: userIds } } });
-      await owner.role.deleteMany({ where: { id: { in: roleIds } } });
-      await owner.permission.deleteMany({ where: { id: { in: permissionIds } } });
       await owner.$disconnect();
     }
     await db?.$disconnect();
@@ -67,7 +70,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
   function makeRuntime(over: Partial<AuthRuntime> = {}) {
     const audits: AuditEntry[] = [];
     const tasks: (() => Promise<void>)[] = [];
-    const calls: { plain: string; hash: string | null }[] = [];
+    const calls: { plain: string }[] = [];
     const clock = { now: t0 };
     const rt: AuthRuntime = {
       db,
@@ -79,9 +82,10 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       retention: { loginAttemptDays: 14, sessionDays: 30 },
       now: () => clock.now,
       deps: {
-        verifyPassword: async (plain, hash) => {
-          calls.push({ plain, hash });
-          return hash !== null && hash === `fake:${plain}`;
+        // The real sign-in step (the database checks the password), with every call recorded.
+        signIn: async (tx, a) => {
+          calls.push({ plain: a.password });
+          return signInWithDatabase(tx, a);
         },
         writeAudit: async (_db, entry) => void audits.push(entry),
       },
@@ -108,16 +112,6 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
   };
   const json = async (res: Response) => JSON.parse(await res.text());
 
-  async function makeRole(permissionKeys: string[]) {
-    const role = await owner.role.create({ data: { key: `T_RT_${rnd()}`, name: "Route Test", isSystem: false } });
-    roleIds.push(role.id);
-    for (const key of permissionKeys) {
-      const p = await owner.permission.upsert({ where: { key }, update: {}, create: { key, module: "test" } });
-      if (!permissionIds.includes(p.id)) permissionIds.push(p.id);
-      await owner.rolePermission.create({ data: { roleId: role.id, permissionId: p.id } });
-    }
-    return role;
-  }
   async function makeUser() {
     const email = `route-test-${rnd()}${rnd()}@example.test`;
     hashes.push(hashIdentifier(email, SECRET));
@@ -134,15 +128,15 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
     owner.organizationMember.create({
       data: { organizationId, userId, status: "ACTIVE", joinedAt: t0, ...(roleId ? { roles: { create: [{ roleId }] } } : {}) },
     });
-  async function fixture(permissionKeys: string[] = []) {
+  // A person with one organisation and, optionally, one of the three real roles in it.
+  async function fixture(roleKey?: RoleKey) {
     const user = await makeUser();
     const org = await makeOrg(user.id);
-    const role = permissionKeys.length ? await makeRole(permissionKeys) : undefined;
-    await makeMember(org.id, user.id, role?.id);
+    await makeMember(org.id, user.id, roleKey ? role[roleKey] : undefined);
     return { user, org, email: user.email };
   }
   const signIn = (userId: string, organizationId: string | null) =>
-    createSession(db, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
+    createSession(owner, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
   const isValid = async (token: string, now = at(MIN)) =>
     (await getAuthContext(db, token, { now, timings, touch: false })).ok;
   const attemptCount = (email: string) =>
@@ -293,7 +287,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       const f = await fixture();
       const { rt } = makeRuntime({
         deps: {
-          verifyPassword: async () => {
+          signIn: async () => {
             throw new Error("boom: could not reach postgresql://app:SuperSecretPw@db.internal/hr");
           },
           writeAudit: async () => {},
@@ -325,7 +319,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       const f = await fixture();
       const failure = Object.assign(new Error("duplicate key value in table users for ana@example.com"), { code: "23505" });
       const { rt } = makeRuntime({
-        deps: { verifyPassword: async () => { throw failure; }, writeAudit: async () => {} },
+        deps: { signIn: async () => { throw failure; }, writeAudit: async () => {} },
       });
       const written: string[] = [];
       const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
@@ -370,11 +364,11 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       const { rt, calls } = makeRuntime({
         loginGate: createConcurrencyGate(1),
         deps: {
-          verifyPassword: async (plain, hash) => {
-            calls.push({ plain, hash });
+          signIn: async (tx, a) => {
+            calls.push({ plain: a.password });
             started();
             await held; // the first login stays "in progress" until we say so
-            return hash === `fake:${plain}`;
+            return signInWithDatabase(tx, a);
           },
           writeAudit: async () => {},
         },
@@ -402,7 +396,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       const gate = createConcurrencyGate(1);
       const { rt } = makeRuntime({
         loginGate: gate,
-        deps: { verifyPassword: async () => { throw new Error("boom"); }, writeAudit: async () => {} },
+        deps: { signIn: async () => { throw new Error("boom"); }, writeAudit: async () => {} },
       });
       const res = await guarded("login", (r) => handleLogin(r, rt))(post("/api/auth/login", { email: f.email, password: PASSWORD }));
       expect(res.status).toBe(500);
@@ -544,7 +538,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
     it("ends nothing if the audit record cannot be written", async () => {
       const f = await fixture();
       const { rt } = makeRuntime({
-        deps: { verifyPassword: async () => false, writeAudit: async () => { throw new Error("audit write failed"); } },
+        deps: { signIn: signInWithDatabase, writeAudit: async () => { throw new Error("audit write failed"); } },
       });
       const s = await signIn(f.user.id, f.org.id);
       const res = await guarded("logout-all", (r) => handleLogoutAll(r, rt))(post("/api/auth/logout-all", "", cookieHeader(s.token)));
@@ -568,8 +562,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       expect(broken.headers.getSetCookie()[0]).toContain("Max-Age=0");
     });
     it("describes the signed-in person, their organization, roles and permissions", async () => {
-      const tag = rnd();
-      const f = await fixture([`trt${tag}:b_perm`, `trt${tag}:a_perm`]);
+      const f = await fixture("HR_MANAGER");
       const { rt } = makeRuntime();
       const s = await signIn(f.user.id, f.org.id);
       const res = await handleSession(get("/api/auth/session", cookieHeader(s.token)), rt);
@@ -580,8 +573,8 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       expect(Object.keys(body).sort()).toEqual(["absoluteExpiresAt", "expiresAt", "organization", "permissions", "roles", "user"]);
       expect(body.user).toEqual({ id: f.user.id, email: f.email, name: "Route Test" });
       expect(body.organization).toMatchObject({ id: f.org.id, slug: f.org.slug });
-      expect(body.permissions).toEqual([`trt${tag}:a_perm`, `trt${tag}:b_perm`]); // sorted
-      expect(body.roles).toHaveLength(1);
+      expect(body.permissions).toEqual([...ROLE_PERMISSIONS.HR_MANAGER].sort()); // sorted
+      expect(body.roles).toEqual(["HR_MANAGER"]);
       expect(body.expiresAt).toBe(at(60 * MIN).toISOString());
       expect(body.absoluteExpiresAt).toBe(at(12 * 60 * MIN).toISOString());
       for (const secret of [s.token, "passwordHash", "isPlatformAdmin", "fake:"]) expect(text).not.toContain(secret);
@@ -612,19 +605,16 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
   // =========================================================================
   describe("POST /api/auth/organization", () => {
     async function twoOrgs() {
-      const tag = rnd();
-      const roleA = await makeRole([`trt${tag}:only_a`]);
-      const roleB = await makeRole([`trt${tag}:only_b`]);
       const me = await makeUser();
       const stranger = await makeUser();
       const orgA = await makeOrg(me.id);
       const orgB = await makeOrg(me.id);
       const foreign = await makeOrg(stranger.id);
-      await makeMember(orgA.id, me.id, roleA.id);
-      await makeMember(orgB.id, me.id, roleB.id);
+      await makeMember(orgA.id, me.id, role.SUPER_ADMIN);
+      await makeMember(orgB.id, me.id, role.EMPLOYEE);
       await makeMember(foreign.id, stranger.id);
       const session = await signIn(me.id, orgA.id);
-      return { tag, me, orgA, orgB, foreign, session };
+      return { me, orgA, orgB, foreign, session };
     }
     it("needs a session, and refuses other websites", async () => {
       const w = await twoOrgs();
@@ -671,7 +661,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
       const w = await twoOrgs();
       const { rt, audits } = makeRuntime();
       const before = await json(await handleSession(get("/api/auth/session", cookieHeader(w.session.token)), rt));
-      expect(before.permissions).toEqual([`trt${w.tag}:only_a`]);
+      expect(before.permissions).toEqual([...ROLE_PERMISSIONS.SUPER_ADMIN].sort());
 
       const res = await handleSwitchOrganization(post("/api/auth/organization", { organizationId: w.orgB.id }, cookieHeader(w.session.token)), rt);
       expect(res.status).toBe(200);
@@ -680,7 +670,7 @@ describe.skipIf(!enabled)("auth endpoints (test database)", () => {
 
       const after = await json(await handleSession(get("/api/auth/session", cookieHeader(w.session.token)), rt));
       expect(after.organization.id).toBe(w.orgB.id);
-      expect(after.permissions).toEqual([`trt${w.tag}:only_b`]); // nothing carried over from organization A
+      expect(after.permissions).toEqual([...ROLE_PERMISSIONS.EMPLOYEE].sort()); // nothing carried over from organization A
       expect(audits).toHaveLength(1);
       expect(audits[0]).toMatchObject({ action: "auth.organization_switched", organizationId: w.orgB.id });
     });

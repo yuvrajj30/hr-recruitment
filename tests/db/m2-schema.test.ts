@@ -37,19 +37,21 @@ describe.skipIf(!enabled)("Milestone 2 tables (test database)", () => {
     }
   };
 
-  // Creates a throw-away user, then tries to insert one session as hr_runtime. Always rolled back.
+  // Creates a throw-away user, then tries to insert one session. Always rolled back. Run as the OWNER account:
+  // these are the table's own rules, and since the security_hardening migration the app account (hr_runtime)
+  // cannot insert sessions at all (the database creates them after checking the password).
   const trySession = async (columns: string, values: string) => {
-    await rt.query("BEGIN");
+    await owner.query("BEGIN");
     try {
-      await rt.query(
+      await owner.query(
         `INSERT INTO users(id, email, name, updated_at) VALUES ('${USER_ID}', 'm2-test@example.invalid', 'M2 Test', now())`,
       );
-      await rt.query("SAVEPOINT before_session");
+      await owner.query("SAVEPOINT before_session");
       try {
-        await rt.query(
+        await owner.query(
           `INSERT INTO sessions(id, user_id, token_hash, ${columns}) VALUES (gen_random_uuid(), '${USER_ID}', 'test-token-hash', ${values})`,
         );
-        const row = (await rt.query(
+        const row = (await owner.query(
           `SELECT last_seen_at IS NOT NULL AS has_last_seen, revoked_at IS NULL AS not_revoked, revoked_reason IS NULL AS no_reason FROM sessions WHERE token_hash = 'test-token-hash'`,
         )).rows[0];
         return { ok: true as const, error: "", row };
@@ -57,7 +59,7 @@ describe.skipIf(!enabled)("Milestone 2 tables (test database)", () => {
         return { ok: false as const, error: String(e.message), row: undefined };
       }
     } finally {
-      await rt.query("ROLLBACK");
+      await owner.query("ROLLBACK");
     }
   };
 
@@ -79,7 +81,8 @@ describe.skipIf(!enabled)("Milestone 2 tables (test database)", () => {
       expect(seen).toBe(2);
       await rt.query(`UPDATE auth_login_attempts SET succeeded = true WHERE identifier_hash = 'hash-1'`);
       // the cleanup the app will run: remove attempts older than 14 days
-      const removed = (await rt.query(`DELETE FROM auth_login_attempts WHERE created_at < now() - interval '14 days'`)).rowCount;
+      // (limited to this test's own rows: other test files run in parallel against the same table)
+      const removed = (await rt.query(`DELETE FROM auth_login_attempts WHERE created_at < now() - interval '14 days' AND identifier_hash IN ('hash-1','hash-2')`)).rowCount;
       expect(removed).toBe(1);
       await rt.query(`DELETE FROM auth_login_attempts`);
     } finally {

@@ -52,3 +52,10 @@ next-env.d.ts
 
 # Local leftover draft of the Milestone 2 schema (identical copy of prisma/schema.prisma)
 /prisma/schema.m2-proposed.prisma
+
+# Private uploaded files (candidate resumes). Never committed, never served directly.
+/storage/
+
+# Personal documents and screenshots dropped in the project root (never part of the app)
+/*.pdf
+/*.png

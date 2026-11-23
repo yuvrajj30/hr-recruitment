@@ -10,10 +10,11 @@ import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { writeAudit } from "@/lib/auth/audit";
 import { sessionTimings } from "@/lib/auth/config";
-import { loginWithPassword, type LoginDeps, type LoginInput } from "@/lib/auth/login-service";
+import { loginWithPassword, type LoginDeps, type LoginInput, signInWithDatabase } from "@/lib/auth/login-service";
 import { validateSession } from "@/lib/auth/session-store";
 import { createDb, type Db } from "@/lib/db";
-import { hashPassword, verifyPassword } from "@/lib/security/password";
+import bcrypt from "bcryptjs";
+import { hashPassword } from "@/lib/security/password";
 import { hashIdentifier } from "@/lib/security/tokens";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
@@ -32,7 +33,8 @@ const timings = sessionTimings({
 });
 const SECRET = "unit-test-secret-".repeat(3); // at least 32 characters
 const PASSWORD = "Correct-Horse-Battery-9";
-const FAKE_HASH = `fake:${PASSWORD}`;
+// A real bcrypt hash (the database checks passwords itself now); a low cost keeps the tests quick.
+const FAKE_HASH = bcrypt.hashSync(PASSWORD, 4);
 const INVALID = { ok: false, reason: "invalid_credentials" } as const;
 
 describe.skipIf(!enabled)("login service (test database)", () => {
@@ -61,13 +63,13 @@ describe.skipIf(!enabled)("login service (test database)", () => {
     await db?.$disconnect();
   });
 
-  // A stand-in password check that records every call: it accepts only "fake:<password>" hashes.
+  // The real sign-in step (the database checks the password), with every call recorded.
   function stubDeps(overrides: Partial<LoginDeps> = {}) {
-    const calls: { plain: string; hash: string | null }[] = [];
+    const calls: { plain: string }[] = [];
     const deps: LoginDeps = {
-      verifyPassword: async (plain, hash) => {
-        calls.push({ plain, hash });
-        return hash !== null && hash === `fake:${plain}`;
+      signIn: async (tx, a) => {
+        calls.push({ plain: a.password });
+        return signInWithDatabase(tx, a);
       },
       writeAudit: async () => {},
       ...overrides,
@@ -152,7 +154,7 @@ describe.skipIf(!enabled)("login service (test database)", () => {
       expect(r.organization).toEqual({ id: f.org.id, name: f.org.name, slug: f.org.slug });
       expect(r.expiresAt).toEqual(at(60 * MIN));
       expect(r.absoluteExpiresAt).toEqual(at(12 * 60 * MIN));
-      expect(calls).toEqual([{ plain: PASSWORD, hash: FAKE_HASH }]);
+      expect(calls).toEqual([{ plain: PASSWORD }]);
 
       // The token really works...
       const v = await validateSession(db, r.token, { now: at(MIN), timings, touch: false });
@@ -199,7 +201,7 @@ describe.skipIf(!enabled)("login service (test database)", () => {
     it("works with the real password check too (bcrypt)", async () => {
       const passwordHash = await hashPassword(PASSWORD);
       const f = await fixture({ passwordHash });
-      const deps: LoginDeps = { verifyPassword, writeAudit: async () => {} };
+      const deps: LoginDeps = { signIn: signInWithDatabase, writeAudit: async () => {} };
       expect((await attempt(deps, f.email)).ok).toBe(true);
       expect(await attempt(deps, f.email, { password: "Wrong-Password-123", now: at(1000) })).toEqual(INVALID);
       // A password longer than bcrypt's 72-byte limit is refused cleanly, never crashes or half-matches.
@@ -214,7 +216,7 @@ describe.skipIf(!enabled)("login service (test database)", () => {
       const wrong = stubDeps();
       const a = await attempt(wrong.deps, f.email, { password: "Wrong-Password-1" });
       expect(a).toEqual(INVALID);
-      expect(wrong.calls).toEqual([{ plain: "Wrong-Password-1", hash: FAKE_HASH }]);
+      expect(wrong.calls).toEqual([{ plain: "Wrong-Password-1" }]);
       expect(await attemptRows(f.email)).toHaveLength(1);
       expect((await attemptRows(f.email))[0].succeeded).toBe(false);
 
@@ -222,21 +224,21 @@ describe.skipIf(!enabled)("login service (test database)", () => {
       const ghost = track(`nobody-${randomBytes(5).toString("hex")}@example.test`);
       const b = await attempt(unknown.deps, ghost);
       expect(b).toEqual(a); // exactly the same answer
-      expect(unknown.calls).toEqual([{ plain: PASSWORD, hash: null }]); // still did a full check, on a throw-away hash
+      expect(unknown.calls).toEqual([{ plain: PASSWORD }]); // still did a full check, on a throw-away hash
       expect(await attemptRows(ghost)).toHaveLength(1); // unknown emails are tracked too
     });
     it("a disabled account fails even with the right password, and its real hash is never used", async () => {
       const f = await fixture({ status: "DISABLED" });
       const { deps, calls } = stubDeps();
       expect(await attempt(deps, f.email)).toEqual(INVALID);
-      expect(calls).toEqual([{ plain: PASSWORD, hash: null }]);
+      expect(calls).toEqual([{ plain: PASSWORD }]);
       expect(await owner.session.count({ where: { userId: f.user.id } })).toBe(0);
     });
     it("an account with no password set fails", async () => {
       const f = await fixture({ passwordHash: null });
       const { deps, calls } = stubDeps();
       expect(await attempt(deps, f.email)).toEqual(INVALID);
-      expect(calls).toEqual([{ plain: PASSWORD, hash: null }]);
+      expect(calls).toEqual([{ plain: PASSWORD }]);
     });
     it("a correct password is still refused when the person has no usable workspace", async () => {
       const scenarios: [string, (userId: string, tag: string) => Promise<void>][] = [
@@ -381,6 +383,8 @@ describe.skipIf(!enabled)("login service (test database)", () => {
       const email = track("audit-fixture@example.test");
       let user = await owner.user.findUnique({ where: { email } });
       user ??= await owner.user.create({ data: { email, name: "Audit Fixture", passwordHash: FAKE_HASH } });
+      // The fixed user may still carry a hash from an earlier run: make sure it is the one this run knows.
+      await owner.user.update({ where: { id: user.id }, data: { passwordHash: FAKE_HASH } });
       let org = await owner.organization.findUnique({ where: { slug: "audit-fixture" } });
       org ??= await owner.organization.create({ data: { slug: "audit-fixture", name: "Audit Fixture", ownerUserId: user.id } });
       await owner.organizationMember.upsert({
@@ -395,7 +399,7 @@ describe.skipIf(!enabled)("login service (test database)", () => {
       const r = await loginWithPassword(
         db,
         { email, password: PASSWORD, ipAddress: ip, userAgent: "vitest", now: t0, timings, authSecret: SECRET },
-        { verifyPassword: real.deps.verifyPassword, writeAudit },
+        { signIn: real.deps.signIn, writeAudit },
       );
       expect(r.ok).toBe(true);
       if (!r.ok) return;

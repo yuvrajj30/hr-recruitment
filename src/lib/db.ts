@@ -9,13 +9,23 @@ import { getEnv } from "@/lib/env";
 export type Db = PrismaClient;
 
 // Builds a client for a given address. Tests use this with the disposable test database.
-export function createDb(connectionString: string, options: { max?: number } = {}): Db {
+//
+// sessionTimeZone: the PostgreSQL session time zone for every connection.
+//   "UTC" (the default here) - required for correct timestamps: the Prisma pg adapter sends and reads
+//          timestamptz values WITHOUT their offset, so any other session time zone shifts them (stored
+//          values move by the zone's offset, and database-generated times are read back shifted).
+//   null  - leave the server's own setting (legacy behaviour; the server is configured for Asia/Calcutta).
+// The running app chooses via DB_SESSION_TIME_ZONE (see getDb), so the switch to UTC for an existing
+// database happens only together with the reviewed correction of its historical timestamps.
+export function createDb(connectionString: string, options: { max?: number; sessionTimeZone?: "UTC" | null } = {}): Db {
+  const timeZone = options.sessionTimeZone === undefined ? "UTC" : options.sessionTimeZone;
   return new PrismaClient({
     adapter: new PrismaPg({
       connectionString,
       max: options.max ?? 10,
       connectionTimeoutMillis: 5_000,
       idleTimeoutMillis: 30_000,
+      ...(timeZone ? { options: `-c TimeZone=${timeZone}` } : {}),
     }),
   });
 }
@@ -26,6 +36,7 @@ export function createDb(connectionString: string, options: { max?: number } = {
 const globalForDb = globalThis as unknown as { __hrDb?: Db };
 
 export function getDb(): Db {
-  globalForDb.__hrDb ??= createDb(getEnv().DATABASE_URL);
+  const env = getEnv();
+  globalForDb.__hrDb ??= createDb(env.DATABASE_URL, { sessionTimeZone: env.DB_SESSION_TIME_ZONE ?? null });
   return globalForDb.__hrDb;
 }

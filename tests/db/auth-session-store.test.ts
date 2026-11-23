@@ -73,7 +73,7 @@ describe.skipIf(!enabled)("session store (test database)", () => {
   }
 
   const login = (f: Awaited<ReturnType<typeof fixture>>, now = t0, t = timings) =>
-    createSession(db, {
+    createSession(owner, {
       userId: f.user.id,
       activeOrganizationId: f.org.id,
       ipAddress: "203.0.113.7",
@@ -120,7 +120,7 @@ describe.skipIf(!enabled)("session store (test database)", () => {
     });
     it("keeps over-long address and browser text within limits", async () => {
       const f = await fixture();
-      const s = await createSession(db, {
+      const s = await createSession(owner, {
         userId: f.user.id,
         activeOrganizationId: f.org.id,
         ipAddress: "9".repeat(500),
@@ -354,7 +354,7 @@ describe.skipIf(!enabled)("session store (test database)", () => {
         data: { organizationId: orgB.id, userId: f.user.id, status: "ACTIVE", joinedAt: t0 },
       });
       const inA = await login(f);
-      const inB = await createSession(db, {
+      const inB = await createSession(owner, {
         userId: f.user.id,
         activeOrganizationId: orgB.id,
         ipAddress: null,

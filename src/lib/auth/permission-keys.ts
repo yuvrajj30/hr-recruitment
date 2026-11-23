@@ -1,17 +1,25 @@
-// Every permission the app knows about. Code asks for these names (never for a role name such as "ADMIN"),
-// so who may do what can change in the database without touching code.
+// Every permission the app knows about. Code asks for these names (never for a role name such as "SUPER_ADMIN"),
+// and src/lib/auth/roles.ts decides which of the three roles holds which permission.
 //
 // This list must match the permissions created by prisma/seed.ts; a test compares the two,
 // so a typo here (or a permission added to only one place) fails the tests instead of silently denying access.
 
 export const PERMISSION_KEYS = [
+  // Organisation and system (Super Admin)
   "org:read",
   "org:update",
-  "member:read",
-  "member:invite",
-  "member:update",
-  "member:remove",
-  "member:assign_role",
+  "settings:security",
+  "integration:read",
+  "integration:manage",
+  "audit:read",
+  // Users and accounts
+  "user:read",
+  "user:invite_employee",
+  "user:manage_employee",
+  "user:invite_hr",
+  "user:manage_hr",
+  "user:manage_super_admin",
+  // Recruitment
   "department:read",
   "department:manage",
   "job:read",
@@ -21,21 +29,19 @@ export const PERMISSION_KEYS = [
   "job:close",
   "job:delete",
   "candidate:read",
-  "candidate:read_assigned",
   "candidate:create",
   "candidate:update",
   "candidate:delete",
   "application:read",
-  "application:read_assigned",
   "application:create",
   "application:move_stage",
   "application:assign",
   "application:note",
+  "document:read",
   "form:read",
   "form:manage",
   "form:assign",
   "interview:read",
-  "interview:read_assigned",
   "interview:schedule",
   "interview:update",
   "interview:cancel",
@@ -50,13 +56,25 @@ export const PERMISSION_KEYS = [
   "onboarding:read",
   "onboarding:manage",
   "onboarding:approve",
-  "integration:read",
-  "integration:manage",
+  // Employees, assignments, attendance and leave (HR side)
+  "employee:read",
+  "employee:manage",
+  "assignment:manage",
+  "attendance:read",
+  "attendance:manage",
+  "leave:read",
+  "leave:approve",
+  "leave:manage",
+  // Reports
   "report:read",
-  "audit:read",
+  // Self-service (every role)
+  "self:profile_read",
+  "self:profile_update",
+  "self:attendance_read",
+  "self:attendance_clock",
+  "self:leave_apply",
+  "self:leave_read",
+  "notification:read",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
-
-// Resources that have both "read everything" and "read only what is assigned to me".
-export type AssignableResource = "candidate" | "application" | "interview";

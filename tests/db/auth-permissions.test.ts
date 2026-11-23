@@ -1,13 +1,15 @@
 // Tests roles, permissions and the per-request context against the DISPOSABLE test database only.
-// Roles and permissions are created here with unique names (the test database may be empty), and removed afterwards.
+// It uses the three real roles (Super Admin, HR Manager, Employee); the database refuses any other role.
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sessionTimings } from "@/lib/auth/config";
 import { getAuthContext, requireOrganizationId, scopedToOrganization } from "@/lib/auth/context";
 import { ForbiddenError } from "@/lib/auth/errors";
 import { loadAccess } from "@/lib/auth/permissions";
+import { ROLE_PERMISSIONS, type RoleKey } from "@/lib/auth/roles";
 import { createSession } from "@/lib/auth/session-store";
 import { createDb, type Db } from "@/lib/db";
+import { realRoleIds } from "./roles-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
@@ -23,12 +25,12 @@ describe.skipIf(!enabled)("permissions and request context (test database)", () 
   let db: Db;
   const userIds: string[] = [];
   const orgIds: string[] = [];
-  const roleIds: string[] = [];
-  const permissionIds: string[] = [];
+  let role: Record<RoleKey, string>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 3 });
     db = createDb(runtimeUrl!, { max: 4 });
+    role = await realRoleIds(owner);
   });
   afterAll(async () => {
     if (owner) {
@@ -36,24 +38,12 @@ describe.skipIf(!enabled)("permissions and request context (test database)", () 
       await owner.organizationMember.deleteMany({ where: { userId: { in: userIds } } }); // also removes their role links
       await owner.organization.deleteMany({ where: { id: { in: orgIds } } });
       await owner.user.deleteMany({ where: { id: { in: userIds } } });
-      await owner.role.deleteMany({ where: { id: { in: roleIds } } });
-      await owner.permission.deleteMany({ where: { id: { in: permissionIds } } });
       await owner.$disconnect();
     }
     await db?.$disconnect();
   });
 
-  // A role that carries exactly the given permission names (created fresh, unique to this test run).
-  async function makeRole(label: string, permissionKeys: string[]) {
-    const role = await owner.role.create({ data: { key: `T_${label}_${rnd()}`, name: `Test ${label}`, isSystem: false } });
-    roleIds.push(role.id);
-    for (const key of permissionKeys) {
-      const p = await owner.permission.upsert({ where: { key }, update: {}, create: { key, module: "test" } });
-      if (!permissionIds.includes(p.id)) permissionIds.push(p.id);
-      await owner.rolePermission.create({ data: { roleId: role.id, permissionId: p.id } });
-    }
-    return role;
-  }
+  const permsOf = (key: RoleKey) => [...ROLE_PERMISSIONS[key]].sort();
   async function makeUser(isPlatformAdmin = false) {
     const user = await owner.user.create({ data: { email: `perm-test-${rnd()}@example.test`, name: "Perm Test", isPlatformAdmin } });
     userIds.push(user.id);
@@ -74,24 +64,36 @@ describe.skipIf(!enabled)("permissions and request context (test database)", () 
         roles: { create: roleIds.map((roleId) => ({ roleId })) },
       },
     });
-  const p = (name: string, tag: string) => `tp${tag}:${name}`; // unique permission names for this test
 
   const signIn = (userId: string, organizationId: string | null) =>
-    createSession(db, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
+    createSession(owner, { userId, activeOrganizationId: organizationId, ipAddress: null, userAgent: null, now: t0, timings });
   const context = (token: string) => getAuthContext(db, token, { now: new Date(t0.getTime() + 60_000), timings, touch: false });
 
   // -------------------------------------------------------------------------
   describe("loading a member's access", () => {
-    it("combines the permissions of all of the member's roles", async () => {
-      const tag = rnd();
-      const r1 = await makeRole("one", [p("a", tag), p("b", tag)]);
-      const r2 = await makeRole("two", [p("b", tag), p("c", tag)]);
+    it("gives a member exactly their one role's permissions", async () => {
       const user = await makeUser();
       const org = await makeOrg(user.id);
-      const member = await makeMember(org.id, user.id, [r1.id, r2.id]);
+      const member = await makeMember(org.id, user.id, [role.EMPLOYEE]);
       const access = await loadAccess(db, member.id);
-      expect([...access.permissions].sort()).toEqual([p("a", tag), p("b", tag), p("c", tag)]);
-      expect(access.roleKeys).toEqual([r1.key, r2.key].sort());
+      expect(access.roleKeys).toEqual(["EMPLOYEE"]);
+      expect([...access.permissions].sort()).toEqual(permsOf("EMPLOYEE"));
+      expect(access.permissions.has("job:read")).toBe(false);
+    });
+    it("refuses a second role for the same member (the database allows exactly one)", async () => {
+      const user = await makeUser();
+      const org = await makeOrg(user.id);
+      const member = await makeMember(org.id, user.id, [role.EMPLOYEE]);
+      await expect(owner.organizationMemberRole.create({ data: { memberId: member.id, roleId: role.HR_MANAGER } })).rejects.toThrow();
+      const other = await makeUser();
+      await expect(
+        owner.organizationMember.create({ data: { organizationId: org.id, userId: other.id, roles: { create: [{ roleId: role.HR_MANAGER }, { roleId: role.EMPLOYEE }] } } }),
+      ).rejects.toThrow();
+      expect((await loadAccess(db, member.id)).roleKeys).toEqual(["EMPLOYEE"]);
+    });
+    it("refuses any role other than the three, for the owner and the app account alike", async () => {
+      await expect(owner.role.create({ data: { key: "RECRUITER", name: "Recruiter" } })).rejects.toThrow();
+      await expect(db.role.create({ data: { key: `T_${rnd()}`, name: "Made up" } })).rejects.toThrow();
     });
     it("is empty for a member with no roles", async () => {
       const user = await makeUser();
@@ -99,39 +101,31 @@ describe.skipIf(!enabled)("permissions and request context (test database)", () 
       const member = await makeMember(org.id, user.id, []);
       expect(await loadAccess(db, member.id)).toEqual({ roleKeys: [], permissions: new Set() });
     });
-    it("never mixes in another member's roles", async () => {
-      const tag = rnd();
-      const mine = await makeRole("mine", [p("mine", tag)]);
-      const theirs = await makeRole("theirs", [p("theirs", tag)]);
+    it("never mixes in another member's role", async () => {
       const me = await makeUser();
       const colleague = await makeUser();
       const org = await makeOrg(me.id);
-      const myMember = await makeMember(org.id, me.id, [mine.id]);
-      await makeMember(org.id, colleague.id, [theirs.id]);
-      expect([...(await loadAccess(db, myMember.id)).permissions]).toEqual([p("mine", tag)]);
+      const myMember = await makeMember(org.id, me.id, [role.EMPLOYEE]);
+      await makeMember(org.id, colleague.id, [role.HR_MANAGER]);
+      expect([...(await loadAccess(db, myMember.id)).permissions].sort()).toEqual(permsOf("EMPLOYEE"));
     });
-    it("gives the same person different permissions in different organizations", async () => {
-      const tag = rnd();
-      const adminLike = await makeRole("adminlike", [p("manage", tag), p("view", tag)]);
-      const viewOnly = await makeRole("viewonly", [p("view", tag)]);
+    it("gives the same person different roles in different organizations", async () => {
       const user = await makeUser();
       const orgA = await makeOrg(user.id);
       const orgB = await makeOrg(user.id);
-      const inA = await makeMember(orgA.id, user.id, [adminLike.id]);
-      const inB = await makeMember(orgB.id, user.id, [viewOnly.id]);
-      expect([...(await loadAccess(db, inA.id)).permissions].sort()).toEqual([p("manage", tag), p("view", tag)]);
-      expect([...(await loadAccess(db, inB.id)).permissions]).toEqual([p("view", tag)]);
+      const inA = await makeMember(orgA.id, user.id, [role.SUPER_ADMIN]);
+      const inB = await makeMember(orgB.id, user.id, [role.EMPLOYEE]);
+      expect([...(await loadAccess(db, inA.id)).permissions].sort()).toEqual(permsOf("SUPER_ADMIN"));
+      expect([...(await loadAccess(db, inB.id)).permissions].sort()).toEqual(permsOf("EMPLOYEE"));
     });
   });
 
   // -------------------------------------------------------------------------
   describe("the per-request context", () => {
-    it("carries the person, the organization, the membership, roles and permissions", async () => {
-      const tag = rnd();
-      const role = await makeRole("ctx", [p("x", tag)]);
+    it("carries the person, the organization, the membership, role and permissions", async () => {
       const user = await makeUser();
       const org = await makeOrg(user.id);
-      const member = await makeMember(org.id, user.id, [role.id]);
+      const member = await makeMember(org.id, user.id, [role.HR_MANAGER]);
       const s = await signIn(user.id, org.id);
       const r = await context(s.token);
       expect(r.ok).toBe(true);
@@ -139,28 +133,26 @@ describe.skipIf(!enabled)("permissions and request context (test database)", () 
       expect(r.ctx.user.id).toBe(user.id);
       expect(r.ctx.organization).toEqual({ id: org.id, name: "Perm Org", slug: org.slug });
       expect(r.ctx.memberId).toBe(member.id);
-      expect(r.ctx.roleKeys).toEqual([role.key]);
-      expect([...r.ctx.permissions]).toEqual([p("x", tag)]);
+      expect(r.ctx.roleKeys).toEqual(["HR_MANAGER"]);
+      expect([...r.ctx.permissions].sort()).toEqual(permsOf("HR_MANAGER"));
     });
     it("a role change takes effect on the very next request", async () => {
-      const tag = rnd();
-      const role = await makeRole("change", [p("x", tag)]);
       const user = await makeUser();
       const org = await makeOrg(user.id);
-      const member = await makeMember(org.id, user.id, [role.id]);
+      const member = await makeMember(org.id, user.id, [role.HR_MANAGER]);
       const s = await signIn(user.id, org.id);
       const before = await context(s.token);
-      expect(before.ok && before.ctx.permissions.has(p("x", tag))).toBe(true);
-      await owner.organizationMemberRole.deleteMany({ where: { memberId: member.id } });
+      expect(before.ok && before.ctx.permissions.has("job:create")).toBe(true);
+      await owner.organizationMemberRole.updateMany({ where: { memberId: member.id }, data: { roleId: role.EMPLOYEE } });
       const after = await context(s.token);
       expect(after.ok).toBe(true);
-      expect(after.ok && after.ctx.permissions.size).toBe(0);
+      expect(after.ok && after.ctx.permissions.has("job:create")).toBe(false);
+      expect(after.ok && after.ctx.roleKeys).toEqual(["EMPLOYEE"]);
     });
     it("no context at all once the membership is suspended", async () => {
-      const role = await makeRole("susp", [p("x", rnd())]);
       const user = await makeUser();
       const org = await makeOrg(user.id);
-      const member = await makeMember(org.id, user.id, [role.id]);
+      const member = await makeMember(org.id, user.id, [role.EMPLOYEE]);
       const s = await signIn(user.id, org.id);
       await owner.organizationMember.update({ where: { id: member.id }, data: { status: "SUSPENDED" } });
       expect(await context(s.token)).toEqual({ ok: false, reason: "membership_inactive" });

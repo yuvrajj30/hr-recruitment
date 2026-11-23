@@ -1,8 +1,8 @@
 // ============================================================================
 // Seed script: creates the minimum data needed to log in for the first time.
 //   1. Permissions (the list of things a person can be allowed to do)
-//   2. The four built-in roles, each linked to its permissions
-//   3. The first company (organization), its owner and the first Admin user
+//   2. The three roles (Super Admin, HR Manager, Employee), each linked to its permissions
+//   3. The first company (organization), its owner and its first Super Admin
 //
 // Safe to run more than once: anything that already exists is left alone.
 // The admin password is typed when the script runs. It is never saved in any
@@ -12,6 +12,7 @@ import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { ROLE_DESCRIPTIONS, ROLE_KEYS, ROLE_LABELS, ROLE_PERMISSIONS } from "../src/lib/auth/roles";
 
 // ---- The first company and admin (change these here if ever needed) --------
 const ORGANIZATION = {
@@ -26,17 +27,25 @@ const ADMIN = {
 };
 
 // ---- Permissions: "module:action" -----------------------------------------
+// The keys must match src/lib/auth/permission-keys.ts (a test compares the two).
 const PERMISSIONS: Record<string, [key: string, description: string][]> = {
   organization: [
     ["org:read", "View company settings"],
     ["org:update", "Change company settings"],
+    ["settings:security", "Change security settings"],
   ],
-  member: [
-    ["member:read", "View team members"],
-    ["member:invite", "Invite new team members"],
-    ["member:update", "Edit or suspend team members"],
-    ["member:remove", "Remove team members"],
-    ["member:assign_role", "Change a member's roles"],
+  integration: [
+    ["integration:read", "View integration status"],
+    ["integration:manage", "Manage CafeOS integration and API clients"],
+  ],
+  audit: [["audit:read", "View the audit log"]],
+  user: [
+    ["user:read", "View team members and their accounts"],
+    ["user:invite_employee", "Invite Employee accounts"],
+    ["user:manage_employee", "Deactivate and reactivate Employee accounts"],
+    ["user:invite_hr", "Invite HR Manager accounts"],
+    ["user:manage_hr", "Change, deactivate and reactivate HR Manager accounts"],
+    ["user:manage_super_admin", "Grant, change and deactivate Super Admin access"],
   ],
   department: [
     ["department:read", "View departments"],
@@ -51,28 +60,26 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
     ["job:delete", "Delete job openings"],
   ],
   candidate: [
-    ["candidate:read", "View all candidates"],
-    ["candidate:read_assigned", "View only candidates assigned to me"],
+    ["candidate:read", "View candidates"],
     ["candidate:create", "Add candidates manually"],
-    ["candidate:update", "Edit candidate details"],
+    ["candidate:update", "Edit candidate details and notes"],
     ["candidate:delete", "Delete candidates"],
   ],
   application: [
-    ["application:read", "View all applications"],
-    ["application:read_assigned", "View only applications assigned to me"],
+    ["application:read", "View applications"],
     ["application:create", "Create applications on behalf of candidates"],
     ["application:move_stage", "Move applications between stages"],
-    ["application:assign", "Assign a recruiter to an application"],
+    ["application:assign", "Choose the HR person responsible for an application"],
     ["application:note", "Add internal notes"],
   ],
+  document: [["document:read", "View and download candidate documents"]],
   form: [
     ["form:read", "View form templates"],
     ["form:manage", "Create and edit form templates"],
     ["form:assign", "Send forms to candidates"],
   ],
   interview: [
-    ["interview:read", "View all interviews"],
-    ["interview:read_assigned", "View only interviews I take part in"],
+    ["interview:read", "View interviews"],
     ["interview:schedule", "Schedule interviews"],
     ["interview:update", "Reschedule or edit interviews"],
     ["interview:cancel", "Cancel interviews"],
@@ -96,82 +103,41 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
     ["onboarding:manage", "Manage onboarding tasks and documents"],
     ["onboarding:approve", "Approve onboarding (triggers the CafeOS transfer)"],
   ],
-  integration: [
-    ["integration:read", "View integration status"],
-    ["integration:manage", "Manage CafeOS integration and API clients"],
+  employee: [
+    ["employee:read", "View employee records"],
+    ["employee:manage", "Create and edit employee records"],
+    ["assignment:manage", "Manage employee job and designation assignments"],
   ],
-  report: [["report:read", "View reports and dashboards"]],
-  audit: [["audit:read", "View the audit log"]],
+  attendance: [
+    ["attendance:read", "View everyone's attendance"],
+    ["attendance:manage", "Correct and manage attendance records"],
+  ],
+  leave: [
+    ["leave:read", "View everyone's leave requests"],
+    ["leave:approve", "Approve or reject leave requests"],
+    ["leave:manage", "Set up leave types, holidays and balance adjustments"],
+  ],
+  report: [["report:read", "View HR reports and dashboards"]],
+  self: [
+    ["self:profile_read", "View my own employee profile and work information"],
+    ["self:profile_update", "Update my permitted personal details"],
+    ["self:attendance_read", "View my own attendance"],
+    ["self:attendance_clock", "Clock in and out, record breaks and ask for attendance corrections"],
+    ["self:leave_apply", "Apply for leave"],
+    ["self:leave_read", "View my own leave balance and requests"],
+    ["notification:read", "Receive my notifications"],
+  ],
 };
 
 const ALL_KEYS = Object.values(PERMISSIONS).flatMap((list) => list.map(([key]) => key));
 
-// ---- Roles and which permissions each one gets -----------------------------
-const ROLES: { key: string; name: string; description: string; permissions: string[] }[] = [
-  {
-    key: "ADMIN",
-    name: "Admin",
-    description: "Full control of the company's recruitment workspace",
-    permissions: ALL_KEYS,
-  },
-  {
-    key: "HR_MANAGER",
-    name: "HR Manager",
-    description: "Runs hiring end to end; cannot change company settings or integrations",
-    permissions: ALL_KEYS.filter(
-      (k) =>
-        ![
-          "org:update",
-          "member:update",
-          "member:remove",
-          "member:assign_role",
-          "integration:manage",
-          "job:delete",
-          "candidate:delete",
-        ].includes(k) && !k.endsWith("_assigned"),
-    ),
-  },
-  {
-    key: "RECRUITER",
-    name: "Recruiter",
-    description: "Sources and moves candidates through the pipeline",
-    permissions: [
-      "department:read",
-      "job:read",
-      "job:create",
-      "job:update",
-      "job:publish",
-      "candidate:read",
-      "candidate:create",
-      "candidate:update",
-      "application:read",
-      "application:create",
-      "application:move_stage",
-      "application:note",
-      "form:read",
-      "form:assign",
-      "interview:read",
-      "interview:schedule",
-      "interview:update",
-      "interview:cancel",
-      "feedback:read",
-      "decision:read",
-      "offer:read",
-      "onboarding:read",
-    ],
-  },
-  {
-    key: "INTERVIEWER",
-    name: "Interviewer",
-    description: "Sees only their own interviews and submits feedback",
-    permissions: [
-      "candidate:read_assigned",
-      "application:read_assigned",
-      "interview:read_assigned",
-      "feedback:submit",
-    ],
-  },
-];
+// ---- The three roles: one shared definition (src/lib/auth/roles.ts) --------
+const ROLES = ROLE_KEYS.map((key) => ({
+  key,
+  name: ROLE_LABELS[key],
+  description: ROLE_DESCRIPTIONS[key],
+  permissions: [...ROLE_PERMISSIONS[key]] as string[],
+}));
 
 // ---- Helpers ---------------------------------------------------------------
 function askHidden(question: string): Promise<string> {
@@ -254,6 +220,8 @@ async function main() {
         }),
         skipDuplicates: true,
       });
+      // Exact lists: a permission a role should no longer have is taken away.
+      await prisma.rolePermission.deleteMany({ where: { roleId: saved.id, permission: { key: { notIn: role.permissions } } } });
       console.log(`Role ready: ${role.key} (${role.permissions.length} permissions)`);
     }
 
@@ -298,13 +266,13 @@ async function main() {
       update: {},
       create: { organizationId: org.id, userId: user.id, status: "ACTIVE", joinedAt: new Date() },
     });
-    const adminRole = await prisma.role.findUniqueOrThrow({ where: { key: "ADMIN" } });
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { key: "SUPER_ADMIN" } });
     await prisma.organizationMemberRole.upsert({
       where: { memberId_roleId: { memberId: member.id, roleId: adminRole.id } },
       update: {},
       create: { memberId: member.id, roleId: adminRole.id },
     });
-    console.log("Admin role assigned. Seed finished.");
+    console.log("Super Admin role assigned. Seed finished.");
   } finally {
     await prisma.$disconnect();
   }

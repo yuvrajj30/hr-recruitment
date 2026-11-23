@@ -62,6 +62,11 @@ enum LoginTokenPurpose {
   VERIFY_EMAIL
 }
 
+enum EmployeeStatus {
+  ACTIVE
+  EXITED
+}
+
 enum EmploymentType {
   INTERNSHIP
   FULL_TIME
@@ -281,28 +286,51 @@ enum IntegrationStatus {
 // ----------------------------------------------------------------------------
 
 model Organization {
-  id              String             @id @default(uuid(7)) @db.Uuid
-  slug            String             @unique // public careers URL: /careers/<slug>
-  name            String
-  status          OrganizationStatus @default(ACTIVE)
-  ownerUserId     String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
-  timezone        String             @default("UTC")
-  defaultCurrency String             @default("INR") @map("default_currency")
-  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                               String             @id @default(uuid(7)) @db.Uuid
+  slug                             String             @unique // public careers URL: /careers/<slug>
+  name                             String
+  status                           OrganizationStatus @default(ACTIVE)
+  ownerUserId                      String             @map("owner_user_id") @db.Uuid // exactly one accountable owner
+  timezone                         String             @default("UTC")
+  defaultCurrency                  String             @default("INR") @map("default_currency")
+  // Super Admin's switch: may HR Managers invite Employee accounts? (on by default)
+  hrCanInviteEmployees             Boolean            @default(true) @map("hr_can_invite_employees")
+  // Candidate privacy notice: the name it is given in and the contact for privacy requests and complaints
+  // (the notice is not shown until both are set), and how long candidates who were not hired are kept.
+  privacyNoticeName                String?            @map("privacy_notice_name")
+  privacyContactEmail              String?            @map("privacy_contact_email")
+  candidateRetentionMonths         Int                @default(12) @map("candidate_retention_months")
+  // Set by a database trigger when the period is shortened (migration 20261120010000): for 14 days the retention
+  // job keeps using the longer previous period. Never written by the app.
+  candidateRetentionPreviousMonths Int?               @map("candidate_retention_previous_months")
+  candidateRetentionShortenedAt    DateTime?          @map("candidate_retention_shortened_at") @db.Timestamptz(6)
+  createdAt                        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  owner                  User                    @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  owner                  User                          @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   members                OrganizationMember[]
   sessions               Session[]
   departments            Department[]
+  outlets                Outlet[]
+  designations           Designation[]
+  employees              Employee[]
+  shifts                 Shift[]
+  attendanceRecords      AttendanceRecord[]
+  attendanceRequests     AttendanceCorrectionRequest[]
+  shiftPatterns          EmployeeShiftPattern[]
   jobs                   JobOpening[]
   formTemplates          FormTemplate[]
   candidates             OrganizationCandidate[]
+  candidateProfiles      CandidateProfile[]
+  candidateLoginTokens   CandidateLoginToken[]
   documents              CandidateDocument[]
   notifications          Notification[]
   auditLogs              AuditLog[]
   integrationConnections IntegrationConnection[]
   apiClients             ApiClient[]
+  staffInvitations       StaffInvitation[]
+  leaveTypes             LeaveType[]
+  holidays               Holiday[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -319,25 +347,43 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships            OrganizationMember[]       @relation("MemberUser")
-  invitedMembers         OrganizationMember[]       @relation("MemberInvitedBy")
-  ownedOrganizations     Organization[]             @relation("OrganizationOwner")
-  sessions               Session[]
-  jobsCreated            JobOpening[]               @relation("JobCreatedBy")
-  assignedApplications   Application[]              @relation("ApplicationRecruiter")
-  statusChanges          ApplicationStatusHistory[]
-  notes                  ApplicationNote[]
-  formsCreated           FormTemplate[]
-  formAssignmentsMade    FormAssignment[]
-  interviewsCreated      Interview[]                @relation("InterviewCreatedBy")
-  feedback               InterviewFeedback[]
-  decisions              HiringDecision[]
-  offersCreated          Offer[]
-  onboardingApprovals    OnboardingRecord[]         @relation("OnboardingApprover")
-  onboardingDocsVerified OnboardingDocument[]
-  notifications          Notification[]
-  auditLogs              AuditLog[]
-  apiClientsCreated      ApiClient[]
+  memberships               OrganizationMember[]          @relation("MemberUser")
+  invitedMembers            OrganizationMember[]          @relation("MemberInvitedBy")
+  employeeAssignmentChanges EmployeeAssignment[]
+  shiftsCreated             Shift[]                       @relation("ShiftCreatedBy")
+  shiftsUpdated             Shift[]                       @relation("ShiftUpdatedBy")
+  shiftChanges              ShiftChange[]                 @relation("ShiftChangedBy")
+  shiftPatternsUpdated      EmployeeShiftPattern[]        @relation("ShiftPatternUpdatedBy")
+  attendanceChanges         AttendanceChange[]            @relation("AttendanceChangedBy")
+  correctionsRequested      AttendanceCorrectionRequest[] @relation("CorrectionRequestedBy")
+  correctionsDecided        AttendanceCorrectionRequest[] @relation("CorrectionDecidedBy")
+  ownedOrganizations        Organization[]                @relation("OrganizationOwner")
+  sessions                  Session[]
+  jobsCreated               JobOpening[]                  @relation("JobCreatedBy")
+  assignedApplications      Application[]                 @relation("ApplicationRecruiter")
+  applicationsCreated       Application[]                 @relation("ApplicationCreatedBy")
+  assignmentsReceived       ApplicationAssignment[]       @relation("AssignmentRecruiter")
+  assignmentsMade           ApplicationAssignment[]       @relation("AssignmentAssignedBy")
+  statusChanges             ApplicationStatusHistory[]
+  notes                     ApplicationNote[]
+  formsCreated              FormTemplate[]
+  formAssignmentsMade       FormAssignment[]
+  interviewsCreated         Interview[]                   @relation("InterviewCreatedBy")
+  feedback                  InterviewFeedback[]
+  decisions                 HiringDecision[]
+  offersCreated             Offer[]
+  onboardingApprovals       OnboardingRecord[]            @relation("OnboardingApprover")
+  onboardingDocsVerified    OnboardingDocument[]
+  notifications             Notification[]
+  auditLogs                 AuditLog[]
+  apiClientsCreated         ApiClient[]
+  invitationsSent           StaffInvitation[]             @relation("InvitationInvitedBy")
+  invitationsAccepted       StaffInvitation[]             @relation("InvitationAcceptedUser")
+  invitationsRevoked        StaffInvitation[]             @relation("InvitationRevokedBy")
+  leaveLedgerCreated        LeaveLedgerEntry[]            @relation("LeaveLedgerCreatedBy")
+  leaveRequested            LeaveRequest[]                @relation("LeaveRequestedBy")
+  leaveDecided              LeaveRequest[]                @relation("LeaveDecidedBy")
+  leaveCancelled            LeaveRequest[]                @relation("LeaveCancelledBy")
 
   @@map("users")
 }
@@ -359,15 +405,18 @@ model OrganizationMember {
   roles                  OrganizationMemberRole[]
   assignedJobs           JobRecruiter[]
   interviewParticipation InterviewParticipant[]
+  // At most one (employees.member_id is unique in the database).
+  employees              Employee[]
 
   @@unique([organizationId, userId])
+  @@unique([organizationId, id])
   @@index([userId])
   @@map("organization_members")
 }
 
 model Role {
   id          String   @id @default(uuid(7)) @db.Uuid
-  key         String   @unique // ADMIN, HR_MANAGER, RECRUITER, INTERVIEWER
+  key         String   @unique // exactly three: SUPER_ADMIN, HR_MANAGER, EMPLOYEE (a database check refuses any other)
   name        String
   description String?
   isSystem    Boolean  @default(true) @map("is_system")
@@ -413,6 +462,7 @@ model OrganizationMemberRole {
   role   Role               @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   @@id([memberId, roleId])
+  @@unique([memberId]) // exactly one role per member
   @@index([roleId])
   @@map("organization_member_roles")
 }
@@ -472,9 +522,11 @@ model Department {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   jobs         JobOpening[]
   onboarding   OnboardingRecord[]
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
 
   @@unique([organizationId, name])
   @@unique([organizationId, id])
@@ -550,9 +602,12 @@ model JobRecruiter {
 // organization_candidates row, so companies cannot see each other's candidates.
 // ----------------------------------------------------------------------------
 
+// A candidate as ONE organisation knows them (migration 20261118020000_candidate_profiles_per_organization):
+// the same email in another organisation is a separate profile, and nothing is shared between organisations.
 model CandidateProfile {
   id              String    @id @default(uuid(7)) @db.Uuid
-  email           String    @unique // normalized: trimmed + lower-case
+  organizationId  String    @map("organization_id") @db.Uuid
+  email           String // normalized: trimmed + lower-case; unique per organisation
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
   fullName        String    @map("full_name")
   phone           String?
@@ -571,13 +626,17 @@ model CandidateProfile {
   organizationRecords OrganizationCandidate[]
   account             CandidateAccount?
   loginTokens         CandidateLoginToken[]
+  organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
+  @@unique([organizationId, email])
+  @@unique([organizationId, id])
   @@index([fullName])
   @@map("candidate_profiles")
 }
 
 model CandidateEducation {
   id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
   candidateId    String   @map("candidate_id") @db.Uuid
   institution    String
   course         String?
@@ -586,39 +645,42 @@ model CandidateEducation {
   grade          String?
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
-  @@index([candidateId])
+  @@index([organizationId, candidateId])
   @@map("candidate_educations")
 }
 
 model CandidateExperience {
-  id          String    @id @default(uuid(7)) @db.Uuid
-  candidateId String    @map("candidate_id") @db.Uuid
-  company     String
-  title       String
-  startDate   DateTime? @map("start_date") @db.Date
-  endDate     DateTime? @map("end_date") @db.Date
-  isCurrent   Boolean   @default(false) @map("is_current")
-  description String?
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  candidateId    String    @map("candidate_id") @db.Uuid
+  company        String
+  title          String
+  startDate      DateTime? @map("start_date") @db.Date
+  endDate        DateTime? @map("end_date") @db.Date
+  isCurrent      Boolean   @default(false) @map("is_current")
+  description    String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
-  @@index([candidateId])
+  @@index([organizationId, candidateId])
   @@map("candidate_experiences")
 }
 
 model CandidateSkill {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  candidateId String   @map("candidate_id") @db.Uuid
-  name        String // stored normalized (lower-case) for search
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  candidateId    String   @map("candidate_id") @db.Uuid
+  name           String // stored normalized (lower-case) for search
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
 
   @@unique([candidateId, name])
   @@index([name])
+  @@index([organizationId, candidateId])
   @@map("candidate_skills")
 }
 
@@ -633,6 +695,7 @@ model OrganizationCandidate {
   employeeLinkId      String?       @map("employee_link_id") @db.Uuid
   claimedEmployeeCode String?       @map("claimed_employee_code") // what the applicant typed
   internalVerifiedAt  DateTime?     @map("internal_verified_at") @db.Timestamptz(6)
+  removedAt           DateTime?     @map("removed_at") @db.Timestamptz(6) // personal data removed (app_remove_candidate)
   tags                String[]
   notes               String? // company-level HR notes about the person
   firstSeenAt         DateTime      @default(now()) @map("first_seen_at") @db.Timestamptz(6)
@@ -640,14 +703,15 @@ model OrganizationCandidate {
   updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  candidate    CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  candidate    CandidateProfile      @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Restrict)
   employeeLink ExternalEmployeeLink? @relation(fields: [organizationId, employeeLinkId], references: [organizationId, id], onDelete: NoAction)
   applications Application[]
 
   @@unique([organizationId, candidateId])
   @@unique([organizationId, id])
   @@unique([organizationId, employeeLinkId])
-  @@index([candidateId])
+  @@unique([candidateId]) // a profile belongs to exactly one organisation record
+  @@index([organizationId, removedAt])
   @@index([organizationId, candidateType])
   @@map("organization_candidates")
 }
@@ -659,7 +723,7 @@ model OrganizationCandidate {
 model CandidateDocument {
   id             String       @id @default(uuid(7)) @db.Uuid
   candidateId    String       @map("candidate_id") @db.Uuid
-  organizationId String?      @map("organization_id") @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   applicationId  String?      @map("application_id") @db.Uuid
   kind           DocumentKind
   originalName   String       @map("original_name")
@@ -669,16 +733,22 @@ model CandidateDocument {
   sha256         String
   uploadedAt     DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
   deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz(6)
+  // Set once storage has deleted the file of a removed document; until then the retention job retries
+  // (migration 20261120000000; the partial index for that lookup lives only in the migration).
+  fileRemovedAt  DateTime?    @map("file_removed_at") @db.Timestamptz(6)
 
-  candidate      CandidateProfile      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
-  organization   Organization?         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  candidate      CandidateProfile      @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: Cascade)
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // Prisma warns that SetNull meets a required organizationId: the database clears only application_id (PostgreSQL
+  // 15+ column list, migration 20261118020100_candidate_document_keeps_organization), so the warning is expected.
   application    Application?          @relation("ApplicationOwnedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: SetNull)
   sharedWith     ApplicationDocument[]
   formAnswers    FormAnswer[]
   offerLetterFor Offer[]
   onboardingDocs OnboardingDocument[]
 
-  @@index([candidateId, kind])
+  @@unique([organizationId, id])
+  @@index([organizationId, candidateId, kind])
   @@index([organizationId, applicationId])
   @@map("candidate_documents")
 }
@@ -691,7 +761,7 @@ model ApplicationDocument {
   sharedAt       DateTime @default(now()) @map("shared_at") @db.Timestamptz(6)
 
   application Application       @relation("ApplicationSharedDocuments", fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
-  document    CandidateDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document    CandidateDocument @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: Cascade)
 
   @@id([applicationId, documentId])
   @@index([organizationId, applicationId])
@@ -735,23 +805,42 @@ model CandidateSession {
   @@map("candidate_sessions")
 }
 
+// Public application rate limits, shared by every app server (migration 20261120000000). Only keyed hashes of the
+// visitor address and the email; rows are deleted within an hour. Read and written only by the database function
+// app_public_apply_allowed (the app account has no access to the table).
+model PublicApplyRateEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bucket    String
+  keyHash   String   @map("key_hash")
+  createdAt DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@index([bucket, keyHash, createdAt])
+  @@index([createdAt])
+  @@map("public_apply_rate_events")
+}
+
 // One-time sign-in codes / links. Only a hash of the token is stored.
 model CandidateLoginToken {
-  id            String            @id @default(uuid(7)) @db.Uuid
-  email         String
-  purpose       LoginTokenPurpose
-  tokenHash     String            @unique @map("token_hash")
-  expiresAt     DateTime          @map("expires_at") @db.Timestamptz(6)
-  usedAt        DateTime?         @map("used_at") @db.Timestamptz(6)
-  requestedIp   String?           @map("requested_ip")
-  candidateId   String?           @map("candidate_id") @db.Uuid
-  applicationId String?           @map("application_id") @db.Uuid
-  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String            @id @default(uuid(7)) @db.Uuid
+  email          String
+  purpose        LoginTokenPurpose
+  tokenHash      String            @unique @map("token_hash")
+  expiresAt      DateTime          @map("expires_at") @db.Timestamptz(6)
+  usedAt         DateTime?         @map("used_at") @db.Timestamptz(6)
+  requestedIp    String?           @map("requested_ip")
+  // Required whenever the link names a candidate or an application (CHECK candidate_login_tokens_link_needs_org).
+  organizationId String?           @map("organization_id") @db.Uuid
+  candidateId    String?           @map("candidate_id") @db.Uuid
+  applicationId  String?           @map("application_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  candidate   CandidateProfile? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
-  application Application?      @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  organization Organization?     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // The database clears only candidate_id / application_id (column list, migration 20261118020200).
+  candidate    CandidateProfile? @relation(fields: [organizationId, candidateId], references: [organizationId, id], onDelete: SetNull)
+  application  Application?      @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: SetNull)
 
   @@index([email, createdAt]) // used for rate limiting
+  @@index([organizationId])
   @@index([expiresAt])
   @@map("candidate_login_tokens")
 }
@@ -761,34 +850,39 @@ model CandidateLoginToken {
 // ----------------------------------------------------------------------------
 
 model Application {
-  id                      String           @id @default(uuid(7)) @db.Uuid
-  organizationId          String           @map("organization_id") @db.Uuid
-  referenceNumber         String           @unique @map("reference_number") // shown to the candidate
-  organizationCandidateId String           @map("organization_candidate_id") @db.Uuid
-  jobId                   String           @map("job_id") @db.Uuid
-  stage                   ApplicationStage @default(APPLIED)
-  stageChangedAt          DateTime         @default(now()) @map("stage_changed_at") @db.Timestamptz(6)
-  rejectionReason         String?          @map("rejection_reason")
-  source                  String? // where the candidate heard about the job
+  id                         String           @id @default(uuid(7)) @db.Uuid
+  organizationId             String           @map("organization_id") @db.Uuid
+  referenceNumber            String           @unique @map("reference_number") // shown to the candidate
+  organizationCandidateId    String           @map("organization_candidate_id") @db.Uuid
+  jobId                      String           @map("job_id") @db.Uuid
+  stage                      ApplicationStage @default(APPLIED)
+  stageChangedAt             DateTime         @default(now()) @map("stage_changed_at") @db.Timestamptz(6)
+  rejectionReason            String?          @map("rejection_reason")
+  source                     String? // where the candidate heard about the job
   // Whether the applicant was internal or external when they applied
-  candidateTypeAtApplication CandidateType @default(EXTERNAL) @map("candidate_type_at_application")
+  candidateTypeAtApplication CandidateType    @default(EXTERNAL) @map("candidate_type_at_application")
   // Copy of the candidate's profile at the moment of applying
-  profileSnapshot         Json?            @map("profile_snapshot")
-  assignedRecruiterId     String?          @map("assigned_recruiter_id") @db.Uuid
+  profileSnapshot            Json?            @map("profile_snapshot")
+  assignedRecruiterId        String?          @map("assigned_recruiter_id") @db.Uuid
+  // The staff member who entered this application by hand. Empty = the candidate applied themselves.
+  createdById                String?          @map("created_by_id") @db.Uuid
   // Hash of the private link/token the candidate uses to view this application's status
-  statusTokenHash         String?          @unique @map("status_token_hash")
-  consentAcceptedAt       DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
-  privacyNoticeVersion    String?          @map("privacy_notice_version")
-  appliedAt               DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
-  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  statusTokenHash            String?          @unique @map("status_token_hash")
+  consentAcceptedAt          DateTime         @map("consent_accepted_at") @db.Timestamptz(6)
+  privacyNoticeVersion       String?          @map("privacy_notice_version")
+  ageConfirmedAt             DateTime?        @map("age_confirmed_at") @db.Timestamptz(6) // confirmed being at least 18
+  appliedAt                  DateTime         @default(now()) @map("applied_at") @db.Timestamptz(6)
+  createdAt                  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   job                   JobOpening            @relation(fields: [organizationId, jobId], references: [organizationId, id], onDelete: Restrict)
   organizationCandidate OrganizationCandidate @relation(fields: [organizationId, organizationCandidateId], references: [organizationId, id], onDelete: Restrict)
   assignedRecruiter     User?                 @relation("ApplicationRecruiter", fields: [assignedRecruiterId], references: [id], onDelete: SetNull)
+  createdBy             User?                 @relation("ApplicationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   statusHistory   ApplicationStatusHistory[]
   notes           ApplicationNote[]
+  assignments     ApplicationAssignment[]
   ownedDocuments  CandidateDocument[]        @relation("ApplicationOwnedDocuments")
   sharedDocuments ApplicationDocument[]      @relation("ApplicationSharedDocuments")
   formAssignments FormAssignment[]
@@ -842,6 +936,75 @@ model ApplicationNote {
 
   @@index([organizationId, applicationId, createdAt])
   @@map("application_notes")
+}
+
+// Append-only log of who an application was assigned to, by whom and when.
+// The CURRENT recruiter is applications.assigned_recruiter_id; this table is the history.
+// recruiter_id empty = the application was unassigned at that moment.
+model ApplicationAssignment {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  applicationId  String   @map("application_id") @db.Uuid
+  recruiterId    String?  @map("recruiter_id") @db.Uuid
+  assignedById   String?  @map("assigned_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  application Application @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Cascade)
+  recruiter   User?       @relation("AssignmentRecruiter", fields: [recruiterId], references: [id], onDelete: SetNull)
+  assignedBy  User?       @relation("AssignmentAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, applicationId, createdAt], map: "application_assignments_org_app_created_idx")
+  @@index([recruiterId])
+  @@map("application_assignments")
+}
+
+// One-time invitation to join an organisation as an HR Manager or Employee. Only a hash of the link's
+// token is stored. Expiry, single use, the allowed roles and "one open invitation per person" are also
+// enforced by database rules (see the three_roles migration).
+model StaffInvitation {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  email          String // stored lower-case
+  name           String
+  roleKey        String    @map("role_key") // HR_MANAGER or EMPLOYEE
+  tokenHash      String    @unique @map("token_hash")
+  invitedById    String?   @map("invited_by_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+  acceptedUserId String?   @map("accepted_user_id") @db.Uuid
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedById    String?   @map("revoked_by_id") @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitedBy    User?        @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedUser User?        @relation("InvitationAcceptedUser", fields: [acceptedUserId], references: [id], onDelete: SetNull)
+  revokedBy    User?        @relation("InvitationRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@map("staff_invitations")
+}
+
+// The one-time timestamp correction (see prisma/proposals/timestamp-correction.sql and
+// migration 20261116000000_timestamp_correction_objects). Both tables are append-only records.
+// audit_logs_display (a view, not modelled here) shows audit times with these corrections applied.
+model TimestampCorrection {
+  id          Int                     @id @default(autoincrement())
+  appliedAt   DateTime                @default(now()) @map("applied_at") @db.Timestamptz(6)
+  shift       Unsupported("interval")
+  description String
+
+  @@map("timestamp_corrections")
+}
+
+// Audit log rows are never modified; when a stored time had to be corrected, the correction is recorded here.
+model AuditLogTimeCorrection {
+  auditLogId String                  @id @map("audit_log_id") @db.Uuid
+  shift      Unsupported("interval")
+
+  auditLog AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Restrict)
+
+  @@map("audit_log_time_corrections")
 }
 
 // ----------------------------------------------------------------------------
@@ -956,9 +1119,10 @@ model FormAnswer {
   value          Json?
   documentId     String?   @map("document_id") @db.Uuid // for file-upload answers
 
-  submission FormSubmission    @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
-  field      FormField?        @relation(fields: [fieldId], references: [id], onDelete: SetNull)
-  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  submission FormSubmission     @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade)
+  field      FormField?         @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+  // The database clears only document_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  document   CandidateDocument? @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: SetNull)
 
   @@index([organizationId, submissionId])
   @@index([fieldId])
@@ -1088,7 +1252,8 @@ model Offer {
   updatedAt            DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   application Application        @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: Restrict)
-  offerLetter CandidateDocument? @relation(fields: [offerLetterId], references: [id], onDelete: SetNull)
+  // The database clears only offer_letter_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  offerLetter CandidateDocument? @relation(fields: [organizationId, offerLetterId], references: [organizationId, id], onDelete: SetNull)
   createdBy   User               @relation(fields: [createdById], references: [id], onDelete: Restrict)
   onboarding  OnboardingRecord?
 
@@ -1164,7 +1329,8 @@ model OnboardingDocument {
   updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   onboarding OnboardingRecord   @relation(fields: [organizationId, onboardingId], references: [organizationId, id], onDelete: Cascade)
-  document   CandidateDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  // The database clears only document_id (column list, migration 20261118020200); Prisma sees SET NULL.
+  document   CandidateDocument? @relation(fields: [organizationId, documentId], references: [organizationId, id], onDelete: SetNull)
   verifiedBy User?              @relation(fields: [verifiedById], references: [id], onDelete: SetNull)
 
   @@index([organizationId, onboardingId, status])
@@ -1221,6 +1387,8 @@ model AuditLog {
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  timeCorrection AuditLogTimeCorrection? // set only for rows corrected by the one-time timestamp correction
 
   @@index([organizationId, createdAt])
   @@index([entityType, entityId])
@@ -1376,4 +1544,515 @@ model ApiClient {
 
   @@index([organizationId])
   @@map("api_clients")
+}
+
+// ----------------------------------------------------------------------------
+// EMPLOYEE MANAGEMENT  (organization-owned; migration 20261121000000_employee_management)
+// ----------------------------------------------------------------------------
+
+// A cafe location.
+model Outlet {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  name              String
+  address           String?
+  isActive          Boolean   @default(true) @map("is_active")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Standard hours (all three or none): MORNING = opening -> changeover, EVENING = changeover -> closing.
+  openingTime       DateTime? @map("opening_time") @db.Time(0)
+  changeoverTime    DateTime? @map("changeover_time") @db.Time(0)
+  closingTime       DateTime? @map("closing_time") @db.Time(0)
+  shiftBreakMinutes Int       @default(0) @map("shift_break_minutes")
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
+  shifts       Shift[]
+  attendance   AttendanceRecord[]
+  holidays     Holiday[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("outlets")
+}
+
+// A job title (Barista, Shift Lead, Store Manager...).
+model Designation {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employees    Employee[]
+  assignments  EmployeeAssignment[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("designations")
+}
+
+// A person working for the organisation. Needs no login; memberId links a staff account (then that person can read
+// their own record). Never deleted: status EXITED with exitedOn.
+model Employee {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  employeeCode   String         @map("employee_code")
+  fullName       String         @map("full_name")
+  email          String?
+  phone          String?
+  employmentType EmploymentType @default(FULL_TIME) @map("employment_type")
+  status         EmployeeStatus @default(ACTIVE)
+  joinedOn       DateTime       @map("joined_on") @db.Date
+  exitedOn       DateTime?      @map("exited_on") @db.Date
+  outletId       String?        @map("outlet_id") @db.Uuid
+  departmentId   String?        @map("department_id") @db.Uuid
+  designationId  String?        @map("designation_id") @db.Uuid
+  managerId      String?        @map("manager_id") @db.Uuid
+  memberId       String?        @unique @map("member_id") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  outlet             Outlet?                       @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  department         Department?                   @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: Restrict)
+  designation        Designation?                  @relation(fields: [organizationId, designationId], references: [organizationId, id], onDelete: Restrict)
+  manager            Employee?                     @relation("EmployeeManager", fields: [organizationId, managerId], references: [organizationId, id], onDelete: Restrict)
+  reports            Employee[]                    @relation("EmployeeManager")
+  // The database clears only member_id (column list); Prisma sees SET NULL.
+  member             OrganizationMember?           @relation(fields: [organizationId, memberId], references: [organizationId, id], onDelete: SetNull)
+  assignments        EmployeeAssignment[]          @relation("AssignmentEmployee")
+  managedAssignments EmployeeAssignment[]          @relation("AssignmentManager")
+  shifts             Shift[]
+  attendanceRecords  AttendanceRecord[]
+  correctionRequests AttendanceCorrectionRequest[]
+  // At most one (unique employee_id); a list for Prisma, whose one-to-one needs the composite key to be unique.
+  shiftPatterns      EmployeeShiftPattern[]
+  leaveLedger        LeaveLedgerEntry[]
+  leaveRequests      LeaveRequest[]
+
+  @@unique([organizationId, employeeCode])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@index([organizationId, managerId])
+  @@map("employees")
+}
+
+// Where an employee worked and for whom, over time. Written only by the database (trigger on employees).
+model EmployeeAssignment {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  outletId       String?   @map("outlet_id") @db.Uuid
+  departmentId   String?   @map("department_id") @db.Uuid
+  designationId  String?   @map("designation_id") @db.Uuid
+  managerId      String?   @map("manager_id") @db.Uuid
+  startsAt       DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime? @map("ends_at") @db.Timestamptz(6)
+  changedById    String?   @map("changed_by_id") @db.Uuid
+
+  employee    Employee     @relation("AssignmentEmployee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade)
+  outlet      Outlet?      @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  department  Department?  @relation(fields: [organizationId, departmentId], references: [organizationId, id], onDelete: Restrict)
+  designation Designation? @relation(fields: [organizationId, designationId], references: [organizationId, id], onDelete: Restrict)
+  manager     Employee?    @relation("AssignmentManager", fields: [organizationId, managerId], references: [organizationId, id], onDelete: Restrict)
+  changedBy   User?        @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, employeeId, startsAt])
+  @@map("employee_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// Attendance (migrations 20261122000000..20261122000200). The app account only READS the attendance_* tables;
+// every change goes through the database functions app_clock_in, app_hr_correct_attendance, ... (see the migration).
+// Exclusion constraints (no overlapping shifts / records / breaks) and partial unique indexes live in the SQL only.
+// ---------------------------------------------------------------------------
+enum ShiftStatus {
+  PLANNED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  OPEN
+  CLOSED
+  MISSING_OUT
+  VOID
+}
+
+enum AttendanceSource {
+  SELF
+  HR
+  CORRECTION
+}
+
+enum AttendanceChangeKind {
+  CLOCK_IN
+  CLOCK_OUT
+  BREAK_START
+  BREAK_END
+  HR_RECORDED
+  CORRECTED
+  MARKED_MISSING_OUT
+  VOIDED
+}
+
+enum CorrectionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  SUPERSEDED
+}
+
+// The planned rota: who works where and when.
+model Shift {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  employeeId     String         @map("employee_id") @db.Uuid
+  outletId       String         @map("outlet_id") @db.Uuid
+  startsAt       DateTime       @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime       @map("ends_at") @db.Timestamptz(6)
+  breakMinutes   Int            @default(0) @map("break_minutes")
+  note           String?
+  status         ShiftStatus    @default(PLANNED)
+  cancelReason   String?        @map("cancel_reason")
+  // STANDARD: filled in from the outlet's hours and the employee's standard; `edited` once a person changed it.
+  source         ShiftSource    @default(MANUAL)
+  standardShift  StandardShift? @map("standard_shift")
+  // The day a STANDARD shift stands for (stays the same if a person moves the shift to another day).
+  standardDay    DateTime?      @map("standard_day") @db.Date
+  edited         Boolean        @default(false)
+  createdById    String?        @map("created_by_id") @db.Uuid
+  updatedById    String?        @map("updated_by_id") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee     Employee           @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict)
+  outlet       Outlet             @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  createdBy    User?              @relation("ShiftCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy    User?              @relation("ShiftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  records      AttendanceRecord[]
+  changes      ShiftChange[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, employeeId])
+  @@index([organizationId, startsAt])
+  @@index([organizationId, source, startsAt])
+  @@index([employeeId, standardDay])
+  @@index([organizationId, employeeId, startsAt])
+  @@map("shifts")
+}
+
+// One worked period, from clock-in to clock-out.
+model AttendanceRecord {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  employeeId     String            @map("employee_id") @db.Uuid
+  outletId       String?           @map("outlet_id") @db.Uuid
+  shiftId        String?           @map("shift_id") @db.Uuid
+  clockInAt      DateTime          @map("clock_in_at") @db.Timestamptz(6)
+  clockOutAt     DateTime?         @map("clock_out_at") @db.Timestamptz(6)
+  status         AttendanceStatus
+  breakMinutes   Int?              @map("break_minutes")
+  inSource       AttendanceSource  @map("in_source")
+  outSource      AttendanceSource? @map("out_source")
+  inIp           String?           @map("in_ip")
+  inUserAgent    String?           @map("in_user_agent")
+  outIp          String?           @map("out_ip")
+  outUserAgent   String?           @map("out_user_agent")
+  version        Int               @default(1)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee     Employee                      @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict)
+  outlet       Outlet?                       @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict)
+  shift        Shift?                        @relation(fields: [organizationId, shiftId, employeeId], references: [organizationId, id, employeeId], onDelete: Restrict, map: "attendance_records_shift_fkey")
+  breaks       AttendanceBreak[]
+  changes      AttendanceChange[]
+  requests     AttendanceCorrectionRequest[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, employeeId])
+  @@index([organizationId, clockInAt])
+  @@index([organizationId, employeeId, clockInAt])
+  @@index([organizationId, shiftId])
+  @@map("attendance_records")
+}
+
+model AttendanceBreak {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  recordId       String    @map("record_id") @db.Uuid
+  startsAt       DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime? @map("ends_at") @db.Timestamptz(6)
+
+  record AttendanceRecord @relation(fields: [organizationId, recordId, employeeId], references: [organizationId, id, employeeId], onDelete: Cascade, map: "attendance_breaks_record_fkey")
+
+  @@index([organizationId, recordId])
+  @@map("attendance_breaks")
+}
+
+// Append-only history of every change to a record, written by a database trigger.
+model AttendanceChange {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  employeeId     String               @map("employee_id") @db.Uuid
+  recordId       String               @map("record_id") @db.Uuid
+  kind           AttendanceChangeKind
+  before         Json?
+  after          Json
+  reason         String?
+  requestId      String?              @map("request_id") @db.Uuid
+  selfEdit       Boolean              @default(false) @map("self_edit")
+  changedById    String?              @map("changed_by_id") @db.Uuid
+  createdAt      DateTime             @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  record    AttendanceRecord             @relation(fields: [organizationId, recordId, employeeId], references: [organizationId, id, employeeId], onDelete: Cascade, map: "attendance_changes_record_fkey")
+  // The database clears only request_id (column list); Prisma sees SET NULL.
+  request   AttendanceCorrectionRequest? @relation(fields: [organizationId, requestId], references: [organizationId, id], onDelete: SetNull, map: "attendance_changes_request_fkey")
+  changedBy User?                        @relation("AttendanceChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, recordId, createdAt], map: "attendance_changes_organization_id_record_id_idx")
+  @@map("attendance_changes")
+}
+
+model AttendanceCorrectionRequest {
+  id                   String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId       String                  @map("organization_id") @db.Uuid
+  employeeId           String                  @map("employee_id") @db.Uuid
+  recordId             String?                 @map("record_id") @db.Uuid
+  proposedClockInAt    DateTime                @map("proposed_clock_in_at") @db.Timestamptz(6)
+  proposedClockOutAt   DateTime                @map("proposed_clock_out_at") @db.Timestamptz(6)
+  proposedBreakMinutes Int?                    @map("proposed_break_minutes")
+  reason               String
+  status               CorrectionRequestStatus @default(PENDING)
+  requestedById        String?                 @map("requested_by_id") @db.Uuid
+  decidedById          String?                 @map("decided_by_id") @db.Uuid
+  decidedAt            DateTime?               @map("decided_at") @db.Timestamptz(6)
+  decisionNote         String?                 @map("decision_note")
+  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee     Employee           @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, map: "attendance_correction_requests_employee_fkey")
+  record       AttendanceRecord?  @relation(fields: [organizationId, recordId, employeeId], references: [organizationId, id, employeeId], onDelete: Cascade, map: "attendance_correction_requests_record_fkey")
+  requestedBy  User?              @relation("CorrectionRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy    User?              @relation("CorrectionDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  changes      AttendanceChange[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, status, createdAt], map: "attendance_correction_requests_organization_id_status_idx")
+  @@index([organizationId, employeeId, createdAt], map: "attendance_correction_requests_organization_id_employee_id_idx")
+  @@map("attendance_correction_requests")
+}
+
+// Standard shifts and shift history (migration 20261122000400_standard_shifts_and_shift_history).
+enum StandardShift {
+  MORNING
+  EVENING
+}
+
+enum ShiftSource {
+  MANUAL
+  STANDARD
+}
+
+enum ShiftChangeKind {
+  CREATED
+  CHANGED
+  CANCELLED
+}
+
+// An employee's standard: which standard shift, on which ISO weekdays (1 = Monday), at their home outlet.
+model EmployeeShiftPattern {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  employeeId     String        @unique @map("employee_id") @db.Uuid
+  standardShift  StandardShift @map("standard_shift")
+  workDays       Int[]         @map("work_days") @db.SmallInt
+  updatedById    String?       @map("updated_by_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee     Employee     @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade, map: "employee_shift_patterns_employee_fkey")
+  updatedBy    User?        @relation("ShiftPatternUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@map("employee_shift_patterns")
+}
+
+// Append-only history of every shift, written by a database trigger. changedById NULL = the system.
+model ShiftChange {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  employeeId     String          @map("employee_id") @db.Uuid
+  shiftId        String          @map("shift_id") @db.Uuid
+  kind           ShiftChangeKind
+  before         Json?
+  after          Json
+  changedById    String?         @map("changed_by_id") @db.Uuid
+  createdAt      DateTime        @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  shift     Shift @relation(fields: [organizationId, shiftId, employeeId], references: [organizationId, id, employeeId], onDelete: Cascade, map: "shift_changes_shift_fkey")
+  changedBy User? @relation("ShiftChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, shiftId, createdAt], map: "shift_changes_organization_id_shift_id_idx")
+  @@map("shift_changes")
+}
+
+// Leave (migrations 20261123000000_leave, 20261123000100_leave_functions). The app only READS the ledger and the
+// requests; the database functions app_request_leave, app_decide_leave, ... write them. Partial unique indexes
+// (one GRANT / ACCRUAL / TAKEN ...) and the holidays expression index live in the SQL only.
+enum LeaveAccrual {
+  NONE
+  YEARLY
+  MONTHLY
+}
+
+enum LeaveLedgerKind {
+  GRANT
+  ACCRUAL
+  TAKEN
+  RESTORED
+  ADJUSTMENT
+  CARRY_OVER
+  EXPIRED
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  CANCELLED
+}
+
+model LeaveType {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  paid           Boolean      @default(true)
+  accrual        LeaveAccrual @default(YEARLY)
+  daysPerYear    Decimal      @default(0) @map("days_per_year") @db.Decimal(5, 1)
+  carryOverMax   Decimal      @default(0) @map("carry_over_max") @db.Decimal(5, 1)
+  noteRequired   Boolean      @default(false) @map("note_required")
+  configured     Boolean      @default(false)
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ledger       LeaveLedgerEntry[]
+  requests     LeaveRequest[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, id])
+  @@map("leave_types")
+}
+
+model Holiday {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  outletId       String?  @map("outlet_id") @db.Uuid
+  day            DateTime @db.Date
+  name           String
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  outlet       Outlet?      @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, day])
+  @@map("holidays")
+}
+
+model LeaveLedgerEntry {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  employeeId     String          @map("employee_id") @db.Uuid
+  leaveTypeId    String          @map("leave_type_id") @db.Uuid
+  year           Int             @db.SmallInt
+  kind           LeaveLedgerKind
+  days           Decimal         @db.Decimal(5, 1)
+  month          Int?            @db.SmallInt
+  requestId      String?         @map("request_id") @db.Uuid
+  reason         String?
+  createdById    String?         @map("created_by_id") @db.Uuid
+  createdAt      DateTime        @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  employee  Employee      @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade, map: "leave_ledger_employee_fkey")
+  leaveType LeaveType     @relation(fields: [organizationId, leaveTypeId], references: [organizationId, id], onDelete: Restrict, map: "leave_ledger_type_fkey")
+  request   LeaveRequest? @relation(fields: [organizationId, requestId], references: [organizationId, id], onDelete: Cascade, map: "leave_ledger_request_fkey")
+  createdBy User?         @relation("LeaveLedgerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, employeeId, leaveTypeId, year], map: "leave_ledger_balance_idx")
+  @@index([requestId])
+  @@map("leave_ledger")
+}
+
+model LeaveRequest {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  employeeId     String             @map("employee_id") @db.Uuid
+  leaveTypeId    String             @map("leave_type_id") @db.Uuid
+  startDay       DateTime           @map("start_day") @db.Date
+  endDay         DateTime           @map("end_day") @db.Date
+  startHalf      Boolean            @default(false) @map("start_half")
+  endHalf        Boolean            @default(false) @map("end_half")
+  days           Decimal            @db.Decimal(5, 1)
+  note           String?
+  status         LeaveRequestStatus @default(PENDING)
+  requestedById  String?            @map("requested_by_id") @db.Uuid
+  decidedById    String?            @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime?          @map("decided_at") @db.Timestamptz(6)
+  decisionNote   String?            @map("decision_note")
+  selfDecided    Boolean            @default(false) @map("self_decided")
+  cancelledById  String?            @map("cancelled_by_id") @db.Uuid
+  cancelledAt    DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason   String?            @map("cancel_reason")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee    Employee           @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Cascade, map: "leave_requests_employee_fkey")
+  leaveType   LeaveType          @relation(fields: [organizationId, leaveTypeId], references: [organizationId, id], onDelete: Restrict, map: "leave_requests_type_fkey")
+  requestedBy User?              @relation("LeaveRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy   User?              @relation("LeaveDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  cancelledBy User?              @relation("LeaveCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  ledger      LeaveLedgerEntry[]
+  chargedDays LeaveRequestDay[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, status, startDay], map: "leave_requests_organization_id_status_idx")
+  @@index([organizationId, employeeId, startDay], map: "leave_requests_organization_id_employee_id_idx")
+  @@map("leave_requests")
+}
+
+// Valid time zone names, copied from pg_timezone_names (migration 20261123000200_time_zone_lookup) so that
+// att_org_timezone does not read the whole time zone database on each call. Read only by database functions.
+model TimeZoneName {
+  name String @id
+
+  @@map("time_zone_names")
+}
+
+// What each day of an approved leave request was charged (migration 20261123000300_leave_review_fixes), so a cancel
+// gives back exactly the charge of the days not yet taken. Written and read only by the database functions.
+model LeaveRequestDay {
+  organizationId String   @map("organization_id") @db.Uuid
+  requestId      String   @map("request_id") @db.Uuid
+  day            DateTime @db.Date
+  weight         Decimal  @db.Decimal(2, 1)
+
+  request LeaveRequest @relation(fields: [organizationId, requestId], references: [organizationId, id], onDelete: Cascade, map: "leave_request_days_request_fkey")
+
+  @@id([requestId, day])
+  @@index([organizationId])
+  @@map("leave_request_days")
 }

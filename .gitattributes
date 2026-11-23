@@ -1,0 +1,3 @@
+# Prisma records a SHA-256 checksum of every migration file when it is applied and checks it again later,
+# so migration files must reach every checkout byte for byte. Never convert their line endings.
+prisma/migrations/**/migration.sql -text

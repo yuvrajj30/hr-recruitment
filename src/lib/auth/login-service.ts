@@ -1,10 +1,9 @@
 import "server-only";
 import type { Db } from "@/lib/db";
-import { hashIdentifier } from "@/lib/security/tokens";
-import { verifyPassword } from "@/lib/security/password";
+import { generateSessionToken, hashIdentifier, hashToken } from "@/lib/security/tokens";
 import { type AuditWriter, writeAudit } from "./audit";
 import type { SessionTimings } from "./config";
-import { createSession } from "./session-store";
+import { computeInitialDeadlines } from "./deadlines";
 import { discardAttempt, evaluateThrottle, markAttemptSucceeded, recordAttemptStart } from "./throttle";
 
 // The whole "sign in with email and password" decision, with no web code in it
@@ -35,12 +34,44 @@ export type LoginResult =
   | { ok: false; reason: "invalid_credentials" }
   | { ok: false; reason: "throttled"; retryAfterSeconds: number };
 
-// Replaceable pieces, so tests can count password checks or simulate a failing audit write.
-export type LoginDeps = {
-  verifyPassword: (plain: string, storedHash: string | null) => Promise<boolean>;
-  writeAudit: AuditWriter;
+export type SignedInRow = {
+  session_id: string;
+  user_id: string;
+  email: string;
+  name: string;
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
 };
-const defaultDeps: LoginDeps = { verifyPassword, writeAudit };
+
+export type SignInArgs = {
+  email: string;
+  password: string;
+  tokenHash: string;
+  expiresAt: Date;
+  absoluteExpiresAt: Date;
+  now: Date;
+  ipAddress: string | null;
+  userAgent: string | null;
+};
+// Checks the password and creates the session. Refuses with an error whose message contains
+// "invalid_credentials" (wrong password, unknown email, disabled account, no active workspace: all the same).
+export type SignIn = (tx: Pick<Db, "$queryRaw">, args: SignInArgs) => Promise<SignedInRow>;
+
+// The real thing: ONE database function (see the security_hardening migration). The application's
+// restricted database account can neither read password hashes nor create sessions itself.
+export const signInWithDatabase: SignIn = async (tx, a) => {
+  const rows = await tx.$queryRaw<SignedInRow[]>`
+    SELECT * FROM "app_sign_in"(${a.email}, ${a.password}, ${a.tokenHash}, ${a.expiresAt}::timestamptz,
+      ${a.absoluteExpiresAt}::timestamptz, ${a.now}::timestamptz, ${a.ipAddress}::text, ${a.userAgent}::text)`;
+  const row = rows[0];
+  if (!row) throw new Error("sign-in returned nothing");
+  return row;
+};
+
+// Replaceable pieces, so tests can count or delay password checks, or simulate a failing audit write.
+export type LoginDeps = { signIn: SignIn; writeAudit: AuditWriter };
+const defaultDeps: LoginDeps = { signIn: signInWithDatabase, writeAudit };
 
 const INVALID = { ok: false, reason: "invalid_credentials" } as const;
 
@@ -67,60 +98,54 @@ export async function loginWithPassword(
     return { ok: false, reason: "throttled", retryAfterSeconds: decision.retryAfterSeconds };
   }
 
-  // 3. Look the account up, then ALWAYS do a full password check. A missing, disabled or
-  //    password-less account is checked against a throw-away hash, so every failure takes
-  //    about the same time and looks the same.
-  const user = await db.user.findUnique({
-    where: { email },
-    select: { id: true, email: true, name: true, passwordHash: true, status: true },
-  });
-  const usable = user !== null && user.status === "ACTIVE" && Boolean(user.passwordHash);
-  const passwordOk = await deps.verifyPassword(input.password, usable ? user.passwordHash : null);
-  if (!usable || !passwordOk) return INVALID; // the attempt stays on record as a failure
-
-  // 4. The person must belong to at least one ACTIVE organization that is itself ACTIVE.
-  //    The oldest membership becomes the active workspace for this session.
-  const membership = await db.organizationMember.findFirst({
-    where: { userId: user.id, status: "ACTIVE", organization: { status: "ACTIVE" } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { organization: { select: { id: true, name: true, slug: true } } },
-  });
-  if (!membership) return INVALID;
-  const organization = membership.organization;
-
-  // 5. One transaction: new session + last login time + audit row + attempt marked successful.
-  //    If any part fails, none of it is kept and the person is not signed in.
-  const session = await db.$transaction(async (tx) => {
-    const created = await createSession(tx, {
-      userId: user.id,
-      activeOrganizationId: organization.id,
-      ipAddress: input.ipAddress,
-      userAgent: input.userAgent,
-      now,
-      timings: input.timings,
+  // 3-5. ONE database function checks the password and, only if it is right, creates the session
+  //      (signInWithDatabase above). The function ALWAYS does a full
+  //      password check (a missing or disabled account is checked against a throw-away hash), so every
+  //      failure takes about the same time and looks the same: wrong password, unknown email, disabled
+  //      account, or no active workspace. The oldest active membership becomes the session's workspace.
+  //      One transaction: session + last login time + attempt marked successful + audit row. If any
+  //      part fails, none of it is kept and the person is not signed in.
+  const token = generateSessionToken(); // a brand-new token on every login (no session fixation)
+  const { expiresAt, absoluteExpiresAt } = computeInitialDeadlines(now, input.timings);
+  let signedIn: SignedInRow;
+  try {
+    signedIn = await db.$transaction(async (tx) => {
+      const row = await deps.signIn(tx, {
+        email,
+        password: input.password,
+        tokenHash: hashToken(token),
+        expiresAt,
+        absoluteExpiresAt,
+        now,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      });
+      await markAttemptSucceeded(tx, attemptId);
+      await deps.writeAudit(tx, {
+        organizationId: row.organization_id,
+        actorUserId: row.user_id,
+        action: "auth.login_succeeded",
+        entityType: "session",
+        entityId: row.session_id,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        now,
+      });
+      return row;
     });
-    await tx.user.update({ where: { id: user.id }, data: { lastLoginAt: now } });
-    await markAttemptSucceeded(tx, attemptId);
-    await deps.writeAudit(tx, {
-      organizationId: organization.id,
-      actorUserId: user.id,
-      action: "auth.login_succeeded",
-      entityType: "session",
-      entityId: created.sessionId,
-      ipAddress: input.ipAddress,
-      userAgent: input.userAgent,
-      now,
-    });
-    return created;
-  });
+  } catch (error) {
+    // The attempt stays on record as a failure.
+    if (String((error as Error)?.message ?? "").includes("invalid_credentials")) return INVALID;
+    throw error;
+  }
 
   return {
     ok: true,
-    token: session.token,
-    sessionId: session.sessionId,
-    expiresAt: session.expiresAt,
-    absoluteExpiresAt: session.absoluteExpiresAt,
-    user: { id: user.id, email: user.email, name: user.name },
-    organization,
+    token,
+    sessionId: signedIn.session_id,
+    expiresAt,
+    absoluteExpiresAt,
+    user: { id: signedIn.user_id, email: signedIn.email, name: signedIn.name },
+    organization: { id: signedIn.organization_id, name: signedIn.organization_name, slug: signedIn.organization_slug },
   };
 }
