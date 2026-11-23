@@ -39,7 +39,7 @@ describe("the three roles", () => {
   });
 
   it("give Employees self-service only: nothing about other people, recruitment or administration", () => {
-    expect([...ROLE_PERMISSIONS.EMPLOYEE].sort()).toEqual(["notification:read", "self:attendance_clock", "self:attendance_read", "self:leave_apply", "self:leave_read", "self:profile_read", "self:profile_update"]);
+    expect([...ROLE_PERMISSIONS.EMPLOYEE].sort()).toEqual(["notification:read", "self:attendance_clock", "self:attendance_read", "self:leave_apply", "self:leave_read", "self:profile_read", "self:profile_update", "self:task"]);
     for (const p of ROLE_PERMISSIONS.EMPLOYEE) expect(p.startsWith("self:") || p === "notification:read", p).toBe(true);
   });
 
@@ -51,6 +51,13 @@ describe("the three roles", () => {
     expect(has("SUPER_ADMIN", "leave:manage")).toBe(true);
     expect(has("HR_MANAGER", "leave:manage")).toBe(true);
     expect(has("EMPLOYEE", "leave:manage")).toBe(false);
+  });
+
+  it("let only HR roles assign, review and cancel tasks; everyone works on their own", () => {
+    expect(has("SUPER_ADMIN", "task:manage")).toBe(true);
+    expect(has("HR_MANAGER", "task:manage")).toBe(true);
+    expect(has("EMPLOYEE", "task:manage")).toBe(false);
+    for (const key of ROLE_KEYS) expect(has(key, "self:task"), key).toBe(true);
   });
 
   it("never invite anyone straight in as a Super Admin", () => {

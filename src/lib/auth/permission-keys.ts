@@ -65,6 +65,8 @@ export const PERMISSION_KEYS = [
   "leave:read",
   "leave:approve",
   "leave:manage",
+  // Tasks (CafeOS Milestone 4)
+  "task:manage",
   // Reports
   "report:read",
   // Self-service (every role)
@@ -75,6 +77,7 @@ export const PERMISSION_KEYS = [
   "self:leave_apply",
   "self:leave_read",
   "notification:read",
+  "self:task",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

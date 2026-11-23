@@ -214,6 +214,12 @@ enum NotificationType {
   OFFER_RESPONDED
   ONBOARDING_DOCUMENTS_PENDING
   GENERAL
+  TASK_ASSIGNED
+  TASK_SUBMITTED
+  TASK_CHANGES_REQUESTED
+  TASK_APPROVED
+  TASK_CANCELLED
+  TASK_DUE
 }
 
 enum NotificationChannel {
@@ -331,6 +337,7 @@ model Organization {
   staffInvitations       StaffInvitation[]
   leaveTypes             LeaveType[]
   holidays               Holiday[]
+  tasks                  Task[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -384,6 +391,13 @@ model User {
   leaveRequested            LeaveRequest[]                @relation("LeaveRequestedBy")
   leaveDecided              LeaveRequest[]                @relation("LeaveDecidedBy")
   leaveCancelled            LeaveRequest[]                @relation("LeaveCancelledBy")
+  tasksCreated              Task[]                        @relation("TaskCreatedBy")
+  tasksDecided              Task[]                        @relation("TaskDecidedBy")
+  tasksCancelled            Task[]                        @relation("TaskCancelledBy")
+  taskEvents                TaskEvent[]
+  taskSubmissions           TaskSubmission[]
+  taskResourcesAdded        TaskResource[]                @relation("TaskResourceAddedBy")
+  taskResourcesRemoved      TaskResource[]                @relation("TaskResourceRemovedBy")
 
   @@map("users")
 }
@@ -1363,10 +1377,13 @@ model Notification {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   recipient    User?        @relation(fields: [recipientUserId], references: [id], onDelete: SetNull)
   application  Application? @relation(fields: [organizationId, applicationId], references: [organizationId, id], onDelete: NoAction)
+  taskId       String?      @map("task_id") @db.Uuid
+  task         Task?        @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "notifications_task_fkey")
 
   @@index([recipientUserId, readAt])
   @@index([organizationId, status, scheduledFor])
   @@index([organizationId, applicationId])
+  @@index([taskId])
   @@map("notifications")
 }
 
@@ -1571,6 +1588,7 @@ model Outlet {
   shifts       Shift[]
   attendance   AttendanceRecord[]
   holidays     Holiday[]
+  tasks        Task[]
 
   @@unique([organizationId, name])
   @@unique([organizationId, id])
@@ -1633,6 +1651,7 @@ model Employee {
   shiftPatterns      EmployeeShiftPattern[]
   leaveLedger        LeaveLedgerEntry[]
   leaveRequests      LeaveRequest[]
+  tasks              Task[]
 
   @@unique([organizationId, employeeCode])
   @@unique([organizationId, id])
@@ -2055,4 +2074,196 @@ model LeaveRequestDay {
   @@id([requestId, day])
   @@index([organizationId])
   @@map("leave_request_days")
+}
+
+// Tasks (CafeOS Milestone 4, Part 1; migrations 20261124000000_tasks, 20261124000100_task_functions). The app only
+// READS these tables; the database functions app_assign_task, app_submit_task, app_review_task, ... write them and their
+// history. CHECKs, the append-only triggers and the partial rules live in the SQL only.
+enum TaskStatus {
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  CHANGES_REQUESTED
+  APPROVED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TaskProofKind {
+  PHOTO
+  DOCUMENT
+  TEXT
+}
+
+enum TaskEventKind {
+  ASSIGNED
+  EDITED
+  REASSIGNED
+  RESOURCE_ADDED
+  RESOURCE_REMOVED
+  STARTED
+  NOTE
+  SUBMITTED
+  APPROVED
+  CHANGES_REQUESTED
+  CANCELLED
+}
+
+enum TaskResourceKind {
+  FILE
+  LINK
+}
+
+enum TaskReminderKind {
+  DUE
+  DUE_AFTER
+}
+
+model Task {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String          @map("organization_id") @db.Uuid
+  outletId        String          @map("outlet_id") @db.Uuid
+  ownerEmployeeId String          @map("owner_employee_id") @db.Uuid
+  title           String
+  description     String
+  dueOn           DateTime        @map("due_on") @db.Date
+  dueTime         DateTime?       @map("due_time") @db.Time(0)
+  priority        TaskPriority    @default(NORMAL)
+  proofKinds      TaskProofKind[] @map("proof_kinds")
+  status          TaskStatus      @default(ASSIGNED)
+  createdById     String?         @map("created_by_id") @db.Uuid
+  createdAt       DateTime        @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime        @default(dbgenerated("clock_timestamp()")) @map("updated_at") @db.Timestamptz(6)
+  submittedAt     DateTime?       @map("submitted_at") @db.Timestamptz(6)
+  decidedAt       DateTime?       @map("decided_at") @db.Timestamptz(6)
+  decidedById     String?         @map("decided_by_id") @db.Uuid
+  decisionNote    String?         @map("decision_note")
+  selfReviewed    Boolean         @default(false) @map("self_reviewed")
+  rating          Int?            @db.SmallInt
+  ratingComment   String?         @map("rating_comment")
+  cancelledAt     DateTime?       @map("cancelled_at") @db.Timestamptz(6)
+  cancelledById   String?         @map("cancelled_by_id") @db.Uuid
+  cancelReason    String?         @map("cancel_reason")
+  finalAt         DateTime?       @map("final_at") @db.Timestamptz(6)
+
+  organization  Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  outlet        Outlet           @relation(fields: [organizationId, outletId], references: [organizationId, id], onDelete: Restrict, map: "tasks_outlet_fkey")
+  owner         Employee         @relation(fields: [organizationId, ownerEmployeeId], references: [organizationId, id], onDelete: Restrict, map: "tasks_owner_fkey")
+  createdBy     User?            @relation("TaskCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  decidedBy     User?            @relation("TaskDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  cancelledBy   User?            @relation("TaskCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  events        TaskEvent[]
+  submissions   TaskSubmission[]
+  evidence      TaskEvidence[]
+  resources     TaskResource[]
+  reminders     TaskReminder[]
+  notifications Notification[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, status, dueOn])
+  @@index([ownerEmployeeId, status])
+  @@map("tasks")
+}
+
+model TaskEvent {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  taskId         String        @map("task_id") @db.Uuid
+  kind           TaskEventKind
+  fromStatus     TaskStatus?   @map("from_status")
+  toStatus       TaskStatus    @map("to_status")
+  note           String?
+  changes        Json?
+  actorId        String?       @map("actor_id") @db.Uuid
+  createdAt      DateTime      @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  task  Task  @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "task_events_task_fkey")
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+  @@index([organizationId])
+  @@map("task_events")
+}
+
+model TaskSubmission {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  taskId         String   @map("task_id") @db.Uuid
+  number         Int
+  text           String?
+  submittedById  String?  @map("submitted_by_id") @db.Uuid
+  createdAt      DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  task        Task           @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "task_submissions_task_fkey")
+  submittedBy User?          @relation(fields: [submittedById], references: [id], onDelete: SetNull)
+  evidence    TaskEvidence[]
+
+  @@unique([taskId, number])
+  @@unique([organizationId, id])
+  @@index([organizationId])
+  @@map("task_submissions")
+}
+
+model TaskEvidence {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  taskId         String   @map("task_id") @db.Uuid
+  submissionId   String   @map("submission_id") @db.Uuid
+  storageKey     String   @unique @map("storage_key")
+  originalName   String   @map("original_name")
+  mimeType       String   @map("mime_type")
+  sizeBytes      Int      @map("size_bytes")
+  sha256         String
+  createdAt      DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  task       Task           @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "task_evidence_task_fkey")
+  submission TaskSubmission @relation(fields: [organizationId, submissionId], references: [organizationId, id], onDelete: Cascade, map: "task_evidence_submission_fkey")
+
+  @@index([taskId])
+  @@index([organizationId])
+  @@map("task_evidence")
+}
+
+model TaskResource {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  taskId         String           @map("task_id") @db.Uuid
+  kind           TaskResourceKind
+  storageKey     String?          @unique @map("storage_key")
+  url            String?
+  originalName   String           @map("original_name")
+  mimeType       String?          @map("mime_type")
+  sizeBytes      Int?             @map("size_bytes")
+  sha256         String?
+  addedById      String?          @map("added_by_id") @db.Uuid
+  addedAt        DateTime         @default(dbgenerated("clock_timestamp()")) @map("added_at") @db.Timestamptz(6)
+  removedById    String?          @map("removed_by_id") @db.Uuid
+  removedAt      DateTime?        @map("removed_at") @db.Timestamptz(6)
+
+  task      Task  @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "task_resources_task_fkey")
+  addedBy   User? @relation("TaskResourceAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+  removedBy User? @relation("TaskResourceRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([organizationId])
+  @@map("task_resources")
+}
+
+model TaskReminder {
+  organizationId String           @map("organization_id") @db.Uuid
+  taskId         String           @map("task_id") @db.Uuid
+  kind           TaskReminderKind
+  sentOn         DateTime         @map("sent_on") @db.Date
+
+  task Task @relation(fields: [organizationId, taskId], references: [organizationId, id], onDelete: Cascade, map: "task_reminders_task_fkey")
+
+  @@id([taskId, kind])
+  @@index([organizationId])
+  @@map("task_reminders")
 }

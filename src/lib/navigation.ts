@@ -14,6 +14,7 @@ export type NavIcon =
   | "interviews"
   | "attendance"
   | "leave"
+  | "tasks"
   | "onboarding"
   | "performance"
   | "forms"
@@ -41,6 +42,7 @@ export const NAV_ITEMS: readonly NavItemDefinition[] = [
   { key: "interviews", label: "Interviews", href: "/interviews", section: "workspace", status: "available", requiresAny: ["interview:read"] },
   { key: "attendance", label: "Attendance", href: "/attendance", section: "workspace", status: "available", requiresAny: ["self:attendance_read", "attendance:read"] },
   { key: "leave", label: "Leave Management", href: "/leave", section: "workspace", status: "available", requiresAny: ["self:leave_apply", "leave:read"] },
+  { key: "tasks", label: "Tasks", href: "/tasks", section: "workspace", status: "available", requiresAny: ["self:task", "task:manage"] },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", section: "workspace", status: "planned", requiresAny: ["onboarding:read"] },
   { key: "performance", label: "Performance", href: "/performance", section: "workspace", status: "planned", requiresAny: ["self:profile_read", "employee:read"] },
   { key: "forms", label: "Form Builder", href: "/forms", section: "workspace", status: "planned", requiresAny: ["form:read"] },

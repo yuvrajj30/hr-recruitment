@@ -4,11 +4,23 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { attendanceTimezone } from "@/lib/attendance/attendance";
+import { getAuthRuntime } from "@/lib/auth/runtime";
+import { getCurrentAuth } from "@/lib/auth/server-session";
+import { listMyNotifications, type NotificationView } from "@/lib/notifications/notifications";
+import { formatDateTime } from "@/lib/recruitment/labels";
 
 // An Employee's home: self-service only. Nothing here shows or links to anyone else's information or to
 // HR / Super Admin areas. Attendance and leave are shown as coming soon until those modules exist; their
 // figures will come from real records only.
-export function EmployeeHome({ firstName, organizationName, roleLabel }: { firstName: string; organizationName: string; roleLabel: string }) {
+export async function EmployeeHome({ firstName, organizationName, roleLabel }: { firstName: string; organizationName: string; roleLabel: string }) {
+  const auth = await getCurrentAuth();
+  let latest: NotificationView[] = [];
+  let tz = "UTC";
+  if (auth?.permissions.has("notification:read")) {
+    const db = getAuthRuntime().db;
+    [latest, tz] = await Promise.all([listMyNotifications(db, auth, 5), attendanceTimezone(db, auth)]);
+  }
   return (
     <div className="space-y-6">
       <PageHeader title={`Welcome, ${firstName}`} description={`Your self-service space at ${organizationName}.`} />
@@ -34,8 +46,19 @@ export function EmployeeHome({ firstName, organizationName, roleLabel }: { first
           <p className="text-[13px] text-fg-muted">Leave requests and balances will appear here once the Leave module is switched on.</p>
         </Tile>
 
-        <Tile icon={<Bell className="size-5 text-fg-subtle" aria-hidden />} title="Notifications" description="Messages about your requests and your work." soon>
-          <p className="text-[13px] text-fg-muted">You have no notifications.</p>
+        <Tile icon={<Bell className="size-5 text-fg-subtle" aria-hidden />} title="Notifications" description="Messages about your requests and your work." href="/notifications" action="See all notifications">
+          {latest.length === 0 ? (
+            <p className="text-[13px] text-fg-muted">You have no notifications.</p>
+          ) : (
+            <ul className="space-y-2 text-[13px]">
+              {latest.map((n) => (
+                <li key={n.id}>
+                  <p className={n.read ? "text-fg" : "font-semibold text-fg"}>{n.subject}</p>
+                  <p className="text-xs text-fg-muted">{formatDateTime(n.createdAt, tz)}</p>
+                </li>
+              ))}
+            </ul>
+          )}
         </Tile>
       </div>
     </div>

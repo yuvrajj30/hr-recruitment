@@ -39,6 +39,9 @@ const DEFINER_FUNCTIONS: Record<string, boolean> = {
   // leave (20261123000000_leave, 20261123000100_leave_functions): the only way to write requests and the ledger
   app_request_leave: true, app_withdraw_leave: true, app_decide_leave: true, app_hr_record_leave: true, app_cancel_leave: true,
   app_adjust_leave: true, app_leave_preview: true, app_leave_housekeeping: true, app_who_is_off: true, seed_leave_types_for_new_org: false,
+  // tasks (20261124000100_task_functions): the only way to write tasks, their history and task notifications
+  app_assign_task: true, app_edit_task: true, app_start_task: true, app_add_task_note: true, app_submit_task: true, app_review_task: true,
+  app_cancel_task: true, app_add_task_resource: true, app_remove_task_resource: true, app_task_housekeeping: true,
   // internal only
   app_remove_candidate_core: false, guard_application_candidate_removed: false, guard_employee_manager: false, record_employee_assignment: false, guard_employee_status: false, close_employee_assignment: false, app_candidate_profile_internal: false, app_password_matches: false, app_invitation_sender_ok: false, org_active_super_admins: false,
   guard_last_super_admin: false, guard_owner_is_super_admin: false, guard_session_changes: false, check_application_document_owner: false,
