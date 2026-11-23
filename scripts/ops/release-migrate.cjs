@@ -1,4 +1,4 @@
-// Applies the pending release migrations (Employee Management + Attendance) to the REAL database (hr_recruitment),
+// Applies the pending release migrations (Leave, CafeOS Milestone 3) to the REAL database (hr_recruitment),
 // with guards, then checks the result.
 //   node scripts/ops/release-migrate.cjs
 // Refuses (and changes nothing) unless:
@@ -20,24 +20,25 @@ const { Client } = req("pg");
 const stop = (m) => { console.error("STOPPED (nothing changed): " + m); process.exit(2); };
 
 const EXPECTED_PENDING = [
-  "20261121000000_employee_management",
-  "20261121010000_employee_management_fixes",
-  "20261122000000_attendance_shifts",
-  "20261122000100_attendance_records",
-  "20261122000200_attendance_exit_rules",
-  "20261122000300_attendance_fixes",
-  "20261122000400_standard_shifts_and_shift_history",
-  "20261122000500_standard_shifts_fixes",
+  "20261123000000_leave",
+  "20261123000100_leave_functions",
+  "20261123000200_time_zone_lookup",
+  "20261123000300_leave_review_fixes",
+  "20261123000400_who_is_off_for_staff",
+  "20261123000500_leave_days_off_and_shift_return",
 ];
 
-const NEW_TABLES = ["outlets", "designations", "employees", "employee_assignments", "shifts", "attendance_records", "attendance_breaks",
-  "attendance_changes", "attendance_correction_requests", "employee_shift_patterns", "shift_changes"];
-const READ_ONLY_TABLES = ["attendance_records", "attendance_breaks", "attendance_changes", "attendance_correction_requests", "shift_changes", "employee_assignments"];
-const APP_FUNCTIONS = ["app_my_employee_id", "app_has_permission", "app_clock_in", "app_clock_out", "app_break", "app_request_attendance_correction",
-  "app_withdraw_attendance_correction", "app_hr_record_attendance", "app_hr_correct_attendance", "app_hr_void_attendance",
-  "app_decide_attendance_correction", "app_remove_old_attendance_device_data", "app_apply_standard_shifts", "app_generate_standard_shifts"];
-const INTERNAL_FUNCTIONS = ["att_sync_standard_shifts", "att_apply_correction", "att_lock_employee", "att_say", "att_check_period", "guard_shift",
-  "guard_employee_status", "guard_employee_manager", "record_employee_assignment", "record_shift_change", "att_org_timezone"];
+const NEW_TABLES = ["leave_types", "holidays", "leave_ledger", "leave_requests", "time_zone_names", "leave_request_days"];
+// The app only reads these (the database functions write them).
+const READ_ONLY_TABLES = ["leave_ledger", "leave_requests"];
+// The app may not even read these (only the database functions use them).
+const NO_ACCESS_TABLES = ["time_zone_names", "leave_request_days"];
+const APP_FUNCTIONS = ["app_request_leave", "app_withdraw_leave", "app_decide_leave", "app_hr_record_leave", "app_cancel_leave", "app_adjust_leave",
+  "app_leave_preview", "app_leave_housekeeping", "app_who_is_off", "app_clock_in"];
+const INTERNAL_FUNCTIONS = ["leave_count_days", "leave_day_weights", "leave_balance", "leave_available", "leave_on_full_leave", "leave_lock_employee",
+  "leave_require", "leave_me", "leave_type_of", "leave_check_request", "leave_other_approver_exists", "leave_cancel_shifts", "leave_approve",
+  "leave_refill_standard_shifts", "leave_seed_types", "seed_leave_types_for_new_org", "guard_leave_type", "block_leave_ledger_updates",
+  "att_sync_standard_shifts", "guard_employee_status", "att_org_timezone"];
 
 if (process.env.MIGRATION_DATABASE_URL) stop("MIGRATION_DATABASE_URL is set in this shell; open a new terminal");
 req("dotenv").config({ path: ".env", quiet: true });
@@ -94,14 +95,14 @@ const line = (ok, text) => { if (!ok) bad++; console.log((ok ? "PASS  " : "FAIL 
     await p.query("BEGIN READ ONLY");
     const done = (await pq(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`)).map((x) => x.migration_name);
     line(EXPECTED_PENDING.every((m) => done.includes(m)), "all release migrations are recorded as applied");
-    const [ext] = await pq(`SELECT count(*)::int n FROM pg_extension WHERE extname = 'btree_gist'`);
-    line(ext.n === 1, "btree_gist is installed");
     const rls = await pq(`SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND relname = ANY($1)`, [NEW_TABLES]);
     line(rls.length === NEW_TABLES.length && rls.every((r) => r.relrowsecurity), `row-level security is on for all ${NEW_TABLES.length} new tables (${rls.filter((r) => r.relrowsecurity).length}/${NEW_TABLES.length})`);
     const writes = await pq(`SELECT t FROM unnest($1::text[]) t WHERE has_table_privilege('hr_runtime', t, 'INSERT') OR has_table_privilege('hr_runtime', t, 'UPDATE') OR has_table_privilege('hr_runtime', t, 'DELETE') OR has_table_privilege('hr_runtime', t, 'TRUNCATE')`, [READ_ONLY_TABLES]);
-    line(writes.length === 0, `the app can only read attendance, its history and shift history${writes.length ? ": writable: " + writes.map((r) => r.t).join(", ") : ""}`);
-    const [sh] = await pq(`SELECT has_table_privilege('hr_runtime', 'shifts', 'DELETE') d, has_table_privilege('hr_runtime', 'shifts', 'TRUNCATE') t, has_table_privilege('hr_runtime', 'shifts', 'UPDATE') u`);
-    line(!sh.d && !sh.t && !sh.u, "shifts: the app cannot delete or truncate, and may update only the allowed columns");
+    line(writes.length === 0, `the app can only read the leave ledger and requests${writes.length ? ": writable: " + writes.map((r) => r.t).join(", ") : ""}`);
+    const hidden = await pq(`SELECT t FROM unnest($1::text[]) t WHERE has_table_privilege('hr_runtime', t, 'SELECT') OR has_table_privilege('hr_runtime', t, 'INSERT') OR has_table_privilege('hr_runtime', t, 'UPDATE') OR has_table_privilege('hr_runtime', t, 'DELETE')`, [NO_ACCESS_TABLES]);
+    line(hidden.length === 0, `the app cannot touch the time zone list or the per-day charges${hidden.length ? ": open: " + hidden.map((r) => r.t).join(", ") : ""}`);
+    const [lt] = await pq(`SELECT has_table_privilege('hr_runtime', 'leave_types', 'DELETE') d, has_table_privilege('hr_runtime', 'leave_types', 'TRUNCATE') t, has_table_privilege('hr_runtime', 'holidays', 'UPDATE') hu`);
+    line(!lt.d && !lt.t && !lt.hu, "leave types cannot be deleted by the app; holidays are added or removed, never edited");
     const fns = await pq(`SELECT p.proname, bool_or(has_function_privilege('hr_runtime', p.oid, 'EXECUTE')) AS rt, bool_or(has_function_privilege('public', p.oid, 'EXECUTE')) AS pub
       FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1) GROUP BY p.proname`, [[...APP_FUNCTIONS, ...INTERNAL_FUNCTIONS]]);
     const fn = Object.fromEntries(fns.map((x) => [x.proname, x]));
@@ -109,10 +110,15 @@ const line = (ok, text) => { if (!ok) bad++; console.log((ok ? "PASS  " : "FAIL 
     line(appOk.length === APP_FUNCTIONS.length, `${appOk.length}/${APP_FUNCTIONS.length} entry functions: the app may call them, nobody else${appOk.length === APP_FUNCTIONS.length ? "" : " (wrong: " + APP_FUNCTIONS.filter((n) => !appOk.includes(n)).join(", ") + ")"}`);
     const intOk = INTERNAL_FUNCTIONS.filter((n) => fn[n] && fn[n].rt === false && fn[n].pub === false);
     line(intOk.length === INTERNAL_FUNCTIONS.length, `${intOk.length}/${INTERNAL_FUNCTIONS.length} internal functions: not callable by the app or anyone else${intOk.length === INTERNAL_FUNCTIONS.length ? "" : " (wrong: " + INTERNAL_FUNCTIONS.filter((n) => !intOk.includes(n)).join(", ") + ")"}`);
-    const clock = (await pq(`SELECT r.key FROM role_permissions rp JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = 'self:attendance_clock' ORDER BY 1`)).map((x) => x.key);
-    line(clock.join(",") === "EMPLOYEE,HR_MANAGER,SUPER_ADMIN", `self:attendance_clock is held by all three roles (${clock.join(", ")})`);
-    const [counts] = await pq(`SELECT (SELECT count(*) FROM employees)::int e, (SELECT count(*) FROM shifts)::int s, (SELECT count(*) FROM attendance_records)::int a`);
-    console.log(`INFO  new tables start empty: ${counts.e} employees, ${counts.s} shifts, ${counts.a} attendance records`);
+    const manage = (await pq(`SELECT r.key FROM role_permissions rp JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = 'leave:manage' ORDER BY 1`)).map((x) => x.key);
+    line(manage.join(",") === "HR_MANAGER,SUPER_ADMIN", `leave:manage is held by Super Admin and HR Manager only (${manage.join(", ")})`);
+    const types = await pq(`SELECT o.slug, string_agg(t.code || CASE WHEN t.configured THEN '*' ELSE '' END, ',' ORDER BY t.code) AS codes
+      FROM organizations o LEFT JOIN leave_types t ON t.organization_id = o.id GROUP BY o.slug ORDER BY o.slug`);
+    line(types.every((t) => t.codes === "CL,CO,EL,SL,UL*"), `every organisation has the five leave types, only unpaid set up (${types.map((t) => `${t.slug}: ${t.codes}`).join("; ")})`);
+    const [tz] = await pq(`SELECT count(*)::int n FROM time_zone_names`);
+    line(tz.n > 300, `the time zone list is filled (${tz.n} names)`);
+    const [counts] = await pq(`SELECT (SELECT count(*) FROM leave_requests)::int r, (SELECT count(*) FROM leave_ledger)::int l, (SELECT count(*) FROM holidays)::int h`);
+    console.log(`INFO  new tables start empty: ${counts.r} requests, ${counts.l} ledger lines, ${counts.h} holidays`);
   } finally {
     await p.query("ROLLBACK").catch(() => {});
     await p.end();
