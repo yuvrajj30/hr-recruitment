@@ -63,10 +63,10 @@ export type LeaveTypeView = {
   id: string; code: string; name: string; paid: boolean; accrual: LeaveAccrual; daysPerYear: number; carryOverMax: number;
   noteRequired: boolean; configured: boolean; isActive: boolean;
 };
-const typeSelect = {
+export const typeSelect = {
   id: true, code: true, name: true, paid: true, accrual: true, daysPerYear: true, carryOverMax: true, noteRequired: true, configured: true, isActive: true,
 } satisfies Prisma.LeaveTypeSelect;
-const toTypeView = (t: Prisma.LeaveTypeGetPayload<{ select: typeof typeSelect }>): LeaveTypeView => ({
+export const toTypeView = (t: Prisma.LeaveTypeGetPayload<{ select: typeof typeSelect }>): LeaveTypeView => ({
   ...t, accrual: t.accrual as LeaveAccrual, daysPerYear: Number(t.daysPerYear), carryOverMax: Number(t.carryOverMax),
 });
 
@@ -100,7 +100,7 @@ const toRequestView = (q: Prisma.LeaveRequestGetPayload<{ select: typeof request
 export type HrRequestView = LeaveRequestView & { currentDays: number | null; available: number | null; availableAfter: number | null };
 export type PreviewView = { currentDays: number; available: number | null; availableAfter: number | null };
 
-function balancesOf(
+export function balancesOf(
   types: LeaveTypeView[], years: number[],
   ledger: { leaveTypeId: string; year: number; kind: string; days: Prisma.Decimal }[],
   pending: { leaveTypeId: string; startDay: Date; days: Prisma.Decimal }[],
