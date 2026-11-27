@@ -9,8 +9,9 @@ import { pgSessionToken, purgeTestAuditRows } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
+const maintenanceUrl = process.env.TEST_MAINTENANCE_URL; // the scheduled job's own account (hr_maintenance)
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
-const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl);
+const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl) && isTestDb(maintenanceUrl);
 const rnd = () => randomBytes(4).toString("hex");
 const TZ = "Asia/Kolkata";
 type K = "a" | "b";
@@ -21,6 +22,7 @@ describe.skipIf(!enabled)("standard shifts and shift history (test database)", {
   let owner: Db;
   let raw: Client;
   let rt: Client;
+  let mt: Client; // maintenance mode runs as the job's account, like the daily job
   const orgIds: string[] = [];
   const userIds: string[] = [];
   const w = {} as Record<K, { org: string; user: Record<Who, string>; outlet: string; late: string; e: Record<"morning" | "evening" | "emp", string> }>;
@@ -31,6 +33,8 @@ describe.skipIf(!enabled)("standard shifts and shift history (test database)", {
     rt = new Client({ connectionString: runtimeUrl, options: "-c TimeZone=UTC" });
     await raw.connect();
     await rt.connect();
+    mt = new Client({ connectionString: maintenanceUrl, options: "-c TimeZone=UTC" });
+    await mt.connect();
     const role = await realRoleIds(owner);
     for (const k of ["a", "b"] as const) {
       const user = {} as Record<Who, string>;
@@ -72,18 +76,20 @@ describe.skipIf(!enabled)("standard shifts and shift history (test database)", {
     await owner?.$disconnect();
     await raw?.end();
     await rt?.end();
+    await mt?.end();
   });
 
   async function as(k: K, who: Who | "maintenance", sql: string, params: unknown[] = []) {
-    await rt.query("BEGIN");
+    const c = who === "maintenance" ? mt : rt;
+    await c.query("BEGIN");
     try {
-      if (who === "maintenance") await rt.query(`SELECT set_config('app.mode', 'maintenance', true)`);
-      else await rt.query(`SELECT set_config('app.mode', 'staff', true), set_config('app.session_token', $1, true)`, [await pgSessionToken(raw, w[k].user[who], w[k].org)]);
-      const r = await rt.query(sql, params);
-      await rt.query("COMMIT");
+      if (who === "maintenance") await c.query(`SELECT set_config('app.mode', 'maintenance', true)`);
+      else await c.query(`SELECT set_config('app.mode', 'staff', true), set_config('app.session_token', $1, true)`, [await pgSessionToken(raw, w[k].user[who], w[k].org)]);
+      const r = await c.query(sql, params);
+      await c.query("COMMIT");
       return { rows: r.rows as Record<string, unknown>[], error: undefined as string | undefined };
     } catch (e) {
-      await rt.query("ROLLBACK");
+      await c.query("ROLLBACK");
       return { rows: [] as Record<string, unknown>[], error: (e as Error).message };
     }
   }
@@ -216,7 +222,7 @@ describe.skipIf(!enabled)("standard shifts and shift history (test database)", {
     const countA = Number((await raw.query(`SELECT count(*)::int n FROM shifts WHERE organization_id = $1`, [a.org])).rows[0].n);
     await ok("b", "hr", `SELECT app_apply_standard_shifts()`);
     expect(Number((await raw.query(`SELECT count(*)::int n FROM shifts WHERE organization_id = $1`, [a.org])).rows[0].n)).toBe(countA);
-    expect((await as("a", "hr", `SELECT app_generate_standard_shifts(14)`)).error).toMatch(/not allowed/);
+    expect((await as("a", "hr", `SELECT app_generate_standard_shifts(14)`)).error).toMatch(/permission denied for function app_generate_standard_shifts/);
     expect((await as("a", "hr", `UPDATE shift_changes SET kind = 'CREATED' WHERE shift_id = $1`, [anyShift])).error).toMatch(/permission denied/);
     expect(await raw.query(`UPDATE shift_changes SET after = '{}' WHERE shift_id = $1`, [anyShift]).then(() => "allowed", (e: Error) => e.message)).toMatch(/append-only/);
   });

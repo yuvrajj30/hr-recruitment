@@ -2,19 +2,38 @@
 // removal under their organisation's retention period, and deletes (or retries deleting) the files of removed
 // documents. Prints only counts, never names or emails.
 // Usage (PowerShell, from the project folder):  npm run privacy:retention
-// Meant to run once a day from a scheduler (Windows Task Scheduler, cron, or the hosting platform's jobs). It
-// connects with the app's own restricted account (DATABASE_URL), like the app.
-import "dotenv/config";
+// Meant to run once a day from a scheduler (Windows Task Scheduler, cron, or the hosting platform's jobs).
+// It connects as the MAINTENANCE account (hr_maintenance), the only account that may run the housekeeping functions,
+// read from .env.maintenance (git-ignored, never loaded by the web app). The app's own connections in .env are removed
+// from this process before anything runs, so the job cannot use them by mistake.
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { parse } from "dotenv";
 import { generateStandardShifts, removeOldAttendanceDeviceData, runLeaveHousekeeping } from "@/lib/attendance/retention";
-import { getDb } from "@/lib/db";
-import { getEnv } from "@/lib/env";
+import { createDb } from "@/lib/db";
+import { EnvError } from "@/lib/env";
+import { maintenanceSecretsIn, parseMaintenanceEnv } from "@/lib/maintenance-env";
 import { runCandidateRetention } from "@/lib/recruitment/retention";
 import { runTaskHousekeeping } from "@/lib/tasks/housekeeping";
 import { getFileStorage } from "@/lib/recruitment/storage";
 
+// .env: shared settings such as FILE_STORAGE_DIR and DB_SESSION_TIME_ZONE. .env.maintenance: the job's own connection.
+// Values already set in the environment win, as with dotenv. The maintenance connection must NOT be in .env, which the
+// web app reads too.
+function loadSettings(): void {
+  const read = (file: string) => (existsSync(file) ? parse(readFileSync(file)) : {});
+  const shared = read(path.join(process.cwd(), ".env"));
+  const misplaced = maintenanceSecretsIn(shared);
+  if (misplaced.length) throw new EnvError(`${misplaced.join(", ")} must not be in .env (the web app reads that file): move it to .env.maintenance.`);
+  const own = read(path.join(process.cwd(), ".env.maintenance"));
+  for (const [k, v] of Object.entries({ ...shared, ...own })) if (process.env[k] === undefined) process.env[k] = v;
+  for (const k of ["DATABASE_URL", "MIGRATION_DATABASE_URL", "AUTH_SECRET"]) delete process.env[k];
+}
+
 async function main() {
-  getEnv(); // refuses to run with missing or unsafe settings
-  const db = getDb();
+  loadSettings();
+  const env = parseMaintenanceEnv(process.env); // refuses to run with missing or unsafe settings
+  const db = createDb(env.MAINTENANCE_DATABASE_URL, { max: 2, sessionTimeZone: env.DB_SESSION_TIME_ZONE ?? null });
   try {
     const r = await runCandidateRetention(db, getFileStorage());
     console.log(`Removed ${r.candidatesRemoved} candidate(s) due for removal; deleted ${r.filesDeleted} file(s).`);

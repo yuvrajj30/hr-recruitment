@@ -10,8 +10,9 @@ import { pgSessionToken, purgeTestAuditRows } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
+const maintenanceUrl = process.env.TEST_MAINTENANCE_URL; // the scheduled job's own account (hr_maintenance)
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
-const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl);
+const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl) && isTestDb(maintenanceUrl);
 const rnd = () => randomBytes(4).toString("hex");
 const TZ = "Asia/Kolkata";
 type K = "a" | "b";
@@ -23,6 +24,7 @@ describe.skipIf(!enabled)("leave (test database)", () => {
   let owner: Db;
   let raw: Client;
   let rt: Client;
+  let mt: Client; // maintenance mode runs as the job's account, like the daily job
   const orgIds: string[] = [];
   const userIds: string[] = [];
   const w = {} as Record<K, { org: string; user: Record<Who, string>; member: Record<Who, string>; outlet: string; e: Record<Emp, string>; type: Record<string, string> }>;
@@ -41,6 +43,8 @@ describe.skipIf(!enabled)("leave (test database)", () => {
     rt = new Client({ connectionString: runtimeUrl, options: "-c TimeZone=UTC" });
     await raw.connect();
     await rt.connect();
+    mt = new Client({ connectionString: maintenanceUrl, options: "-c TimeZone=UTC" });
+    await mt.connect();
     // The test weeks (d(0) .. d(45)) must stay in one year and within 365 days: from 3 weeks ahead if that fits,
     // otherwise the second Monday of next January.
     monday = (await raw.query(`SELECT (CASE WHEN extract(year FROM m) = extract(year FROM m + 45) THEN m
@@ -94,9 +98,11 @@ describe.skipIf(!enabled)("leave (test database)", () => {
     await owner?.$disconnect();
     await raw?.end();
     await rt?.end();
+    await mt?.end();
   });
 
   async function run(c: Client, k: K, who: Who | "public" | "maintenance", sql: string, params: unknown[] = []): Promise<Result> {
+    if (who === "maintenance") c = mt;
     await c.query("BEGIN");
     try {
       if (who === "public") await c.query(`SELECT set_config('app.mode', 'public_apply', true), set_config('app.org_id', $1, true)`, [w[k].org]);
@@ -312,7 +318,7 @@ describe.skipIf(!enabled)("leave (test database)", () => {
       expect(close).toEqual([{ year: 2025, kind: "EXPIRED", d: -7 }, { year: 2026, kind: "CARRY_OVER", d: 5 }]);
       await ok("b", "maintenance", `SELECT app_leave_housekeeping('2026-02-02'::date)`);
       expect((await raw.query(`SELECT count(*)::int n FROM leave_ledger WHERE employee_id = $1 AND kind IN ('CARRY_OVER','EXPIRED')`, [b.e.emp2])).rows[0].n).toBe(2);
-      expect((await as("b", "hr", `SELECT app_leave_housekeeping(NULL)`)).error).toMatch(/not allowed/);
+      expect((await as("b", "hr", `SELECT app_leave_housekeeping(NULL)`)).error).toMatch(/permission denied for function app_leave_housekeeping/);
       expect((await as("b", "maintenance", `SELECT app_leave_housekeeping('2099-01-01'::date)`)).error).toMatch(/not allowed/);
     });
 
@@ -376,7 +382,7 @@ describe.skipIf(!enabled)("leave (test database)", () => {
       expect((await as("a", "emp", `SELECT app_decide_leave($1, true, NULL)`, [anyReq])).error).toMatch(/not allowed/);
       expect((await as("a", "emp2", `SELECT app_withdraw_leave($1)`, [anyReq])).error).toMatch(/not_found|request_not_pending/);
       expect((await as("a", "public", `SELECT app_request_leave($1, $2::date, $2::date, false, false, NULL)`, [a.type.UL, d(40)])).error).toMatch(/not allowed/);
-      expect((await as("a", "maintenance", `SELECT app_request_leave($1, $2::date, $2::date, false, false, NULL)`, [a.type.UL, d(40)])).error).toMatch(/not allowed/);
+      expect((await as("a", "maintenance", `SELECT app_request_leave($1, $2::date, $2::date, false, false, NULL)`, [a.type.UL, d(40)])).error).toMatch(/permission denied for function app_request_leave/);
       // Dates: at most 31 days back, 365 ahead, and never across a year end.
       expect((await as("a", "emp", `SELECT app_request_leave($1, (now() AT TIME ZONE 'Asia/Kolkata')::date - 40, (now() AT TIME ZONE 'Asia/Kolkata')::date - 39, false, false, NULL)`, [a.type.UL])).error).toMatch(/leave_too_far_back/);
       expect((await as("a", "emp", `SELECT app_request_leave($1, (now() AT TIME ZONE 'Asia/Kolkata')::date + 400, (now() AT TIME ZONE 'Asia/Kolkata')::date + 400, false, false, NULL)`, [a.type.UL])).error).toMatch(/leave_too_far_ahead/);

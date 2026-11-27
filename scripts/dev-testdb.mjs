@@ -70,6 +70,8 @@ const env = {
   APP_ORIGIN: "http://localhost:3001",
   DB_SESSION_TIME_ZONE: "UTC",
 };
+// The web app must never hold the maintenance account's connection (it refuses to start with it).
+delete env.MAINTENANCE_DATABASE_URL;
 
 console.log("dev:testdb safety checks passed:");
 console.log(`  app database      ${runtimeShown}`);

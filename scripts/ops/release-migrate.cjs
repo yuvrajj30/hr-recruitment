@@ -1,4 +1,4 @@
-// Applies the pending release migrations (Tasks, CafeOS Milestone 4 Part 1) to the REAL database (hr_recruitment),
+// Applies the pending release migration (maintenance identity, audit fix) to the REAL database (hr_recruitment),
 // with guards, then checks the result.
 //   node scripts/ops/release-migrate.cjs
 // Refuses (and changes nothing) unless:
@@ -20,22 +20,12 @@ const { Client } = req("pg");
 const stop = (m) => { console.error("STOPPED (nothing changed): " + m); process.exit(2); };
 
 const EXPECTED_PENDING = [
-  "20261124000000_tasks",
-  "20261124000100_task_functions",
-  "20261124000200_task_fixes",
-  "20261124000300_task_outlet_visibility",
+  "20261127000000_maintenance_identity",
 ];
 
-const NEW_TABLES = ["tasks", "task_events", "task_submissions", "task_evidence", "task_resources", "task_reminders"];
-// The app only reads these (the database functions write them).
-const READ_ONLY_TABLES = ["tasks", "task_events", "task_submissions", "task_evidence", "task_resources"];
-// The app may not even read these (only the database functions use them).
-const NO_ACCESS_TABLES = ["task_reminders"];
-const APP_FUNCTIONS = ["app_assign_task", "app_edit_task", "app_start_task", "app_add_task_note", "app_submit_task", "app_review_task",
-  "app_cancel_task", "app_add_task_resource", "app_remove_task_resource", "app_task_housekeeping"];
-const INTERNAL_FUNCTIONS = ["task_require", "task_lock", "task_require_owner", "task_active_employee", "task_active_outlet", "task_text", "task_today",
-  "task_owner_login", "task_owner_with_login", "task_reviewers", "task_notify", "task_event", "task_file_ok", "task_check_four_eyes",
-  "task_proof_ok", "block_task_history_updates"];
+// The seven housekeeping functions that from now on only the scheduled job's account (hr_maintenance) may run.
+const JOB_FUNCTIONS = ["app_remove_due_candidates", "app_pending_file_removals", "app_confirm_file_removed", "app_remove_old_attendance_device_data",
+  "app_generate_standard_shifts", "app_leave_housekeeping", "app_task_housekeeping"];
 
 if (process.env.MIGRATION_DATABASE_URL) stop("MIGRATION_DATABASE_URL is set in this shell; open a new terminal");
 req("dotenv").config({ path: ".env", quiet: true });
@@ -92,36 +82,24 @@ const line = (ok, text) => { if (!ok) bad++; console.log((ok ? "PASS  " : "FAIL 
     await p.query("BEGIN READ ONLY");
     const done = (await pq(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`)).map((x) => x.migration_name);
     line(EXPECTED_PENDING.every((m) => done.includes(m)), "all release migrations are recorded as applied");
-    const rls = await pq(`SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND relname = ANY($1)`, [NEW_TABLES]);
-    line(rls.length === NEW_TABLES.length && rls.every((r) => r.relrowsecurity), `row-level security is on for all ${NEW_TABLES.length} new tables (${rls.filter((r) => r.relrowsecurity).length}/${NEW_TABLES.length})`);
-    const writes = await pq(`SELECT t FROM unnest($1::text[]) t WHERE has_table_privilege('hr_runtime', t, 'INSERT') OR has_table_privilege('hr_runtime', t, 'UPDATE') OR has_table_privilege('hr_runtime', t, 'DELETE') OR has_table_privilege('hr_runtime', t, 'TRUNCATE')`, [READ_ONLY_TABLES]);
-    line(writes.length === 0, `the app can only read the task tables${writes.length ? ": writable: " + writes.map((r) => r.t).join(", ") : ""}`);
-    const reads = await pq(`SELECT t FROM unnest($1::text[]) t WHERE NOT has_table_privilege('hr_runtime', t, 'SELECT')`, [READ_ONLY_TABLES]);
-    line(reads.length === 0, `the app can read the task tables${reads.length ? ": not readable: " + reads.map((r) => r.t).join(", ") : ""}`);
-    const hidden = await pq(`SELECT t FROM unnest($1::text[]) t WHERE has_table_privilege('hr_runtime', t, 'SELECT') OR has_table_privilege('hr_runtime', t, 'INSERT') OR has_table_privilege('hr_runtime', t, 'UPDATE') OR has_table_privilege('hr_runtime', t, 'DELETE')`, [NO_ACCESS_TABLES]);
-    line(hidden.length === 0, `the app cannot touch the reminder log${hidden.length ? ": open: " + hidden.map((r) => r.t).join(", ") : ""}`);
-    const fns = await pq(`SELECT p.proname, bool_or(has_function_privilege('hr_runtime', p.oid, 'EXECUTE')) AS rt, bool_or(has_function_privilege('public', p.oid, 'EXECUTE')) AS pub
-      FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1) GROUP BY p.proname`, [[...APP_FUNCTIONS, ...INTERNAL_FUNCTIONS]]);
-    const fn = Object.fromEntries(fns.map((x) => [x.proname, x]));
-    const appOk = APP_FUNCTIONS.filter((n) => fn[n]?.rt === true && fn[n]?.pub === false);
-    line(appOk.length === APP_FUNCTIONS.length, `${appOk.length}/${APP_FUNCTIONS.length} entry functions: the app may call them, nobody else${appOk.length === APP_FUNCTIONS.length ? "" : " (wrong: " + APP_FUNCTIONS.filter((n) => !appOk.includes(n)).join(", ") + ")"}`);
-    const intOk = INTERNAL_FUNCTIONS.filter((n) => fn[n] && fn[n].rt === false && fn[n].pub === false);
-    line(intOk.length === INTERNAL_FUNCTIONS.length, `${intOk.length}/${INTERNAL_FUNCTIONS.length} internal functions: not callable by the app or anyone else${intOk.length === INTERNAL_FUNCTIONS.length ? "" : " (wrong: " + INTERNAL_FUNCTIONS.filter((n) => !intOk.includes(n)).join(", ") + ")"}`);
-    const holders = async (key) => (await pq(`SELECT r.key FROM role_permissions rp JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1 ORDER BY 1`, [key])).map((x) => x.key).join(",");
-    const manage = await holders("task:manage");
-    line(manage === "HR_MANAGER,SUPER_ADMIN", `task:manage is held by Super Admin and HR Manager only (${manage})`);
-    const self = await holders("self:task");
-    line(self === "EMPLOYEE,HR_MANAGER,SUPER_ADMIN", `self:task is held by all three roles (${self})`);
-    const [col] = await pq(`SELECT count(*)::int n FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'notifications' AND column_name = 'task_id'`);
-    line(col.n === 1, "notifications.task_id exists");
-    const [pol] = await pq(`SELECT count(*)::int n FROM pg_policies WHERE schemaname = 'public' AND tablename = 'outlets' AND policyname = 'own_task_outlet'`);
-    line(pol.n === 1, "employees can see the outlet of their own task (own_task_outlet policy)");
-    const [counts] = await pq(`SELECT (SELECT count(*) FROM tasks)::int t, (SELECT count(*) FROM task_events)::int e`);
-    console.log(`INFO  new tables start empty: ${counts.t} tasks, ${counts.e} task events`);
+    const fns = await pq(`SELECT p.proname, bool_or(has_function_privilege('hr_runtime', p.oid, 'EXECUTE')) AS rt, bool_or(has_function_privilege('public', p.oid, 'EXECUTE')) AS pub,
+        bool_or(has_function_privilege('hr_maintenance', p.oid, 'EXECUTE')) AS mt
+      FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1) GROUP BY p.proname`, [JOB_FUNCTIONS]);
+    const ok = fns.filter((f) => !f.rt && !f.pub && f.mt).map((f) => f.proname);
+    line(ok.length === JOB_FUNCTIONS.length, `${ok.length}/${JOB_FUNCTIONS.length} housekeeping functions: only hr_maintenance may run them${ok.length === JOB_FUNCTIONS.length ? "" : " (wrong: " + JOB_FUNCTIONS.filter((n) => !ok.includes(n)).join(", ") + ")"}`);
+    const extra = (await pq(`SELECT p.proname FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
+        AND has_function_privilege('hr_maintenance', p.oid, 'EXECUTE') AND NOT has_function_privilege('public', p.oid, 'EXECUTE') ORDER BY 1`)).map((x) => x.proname);
+    line(JSON.stringify(extra) === JSON.stringify([...JOB_FUNCTIONS].sort()), `hr_maintenance may run nothing else${JSON.stringify(extra) === JSON.stringify([...JOB_FUNCTIONS].sort()) ? "" : ": " + extra.join(", ")}`);
+    await p.query(`SELECT set_config('app.mode', 'maintenance', true)`);
+    const [m] = await pq(`SELECT app_mode() AS m`);
+    line(m.m === "refused", `maintenance mode set by another account is refused (owner session sees "${m.m}")`);
+    await p.query(`SELECT set_config('app.mode', 'staff', true)`);
+    const [s2] = await pq(`SELECT app_mode() AS m`);
+    line(s2.m === "staff", "the web app's own modes are unchanged");
   } finally {
     await p.query("ROLLBACK").catch(() => {});
     await p.end();
   }
-  console.log(bad ? `\n${bad} POST-CHECK(S) FAILED` : "\nMigrations applied and all post-checks passed.");
+  console.log(bad ? `\n${bad} POST-CHECK(S) FAILED` : "\nMigration applied and all post-checks passed. Next: run the daily job once (npm run privacy:retention).");
   process.exitCode = bad ? 1 : 0;
 })().catch((e) => { console.error("FAILED: " + String(e.message).replace(/postgres(ql)?:\/\/\S+/g, "<url>")); process.exit(1); });
