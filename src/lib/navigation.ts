@@ -46,7 +46,7 @@ export const NAV_ITEMS: readonly NavItemDefinition[] = [
   { key: "onboarding", label: "Onboarding", href: "/onboarding", section: "workspace", status: "planned", requiresAny: ["onboarding:read"] },
   { key: "performance", label: "Performance", href: "/performance", section: "workspace", status: "planned", requiresAny: ["self:profile_read", "employee:read"] },
   { key: "forms", label: "Form Builder", href: "/forms", section: "workspace", status: "planned", requiresAny: ["form:read"] },
-  { key: "reports", label: "Reports and Analytics", href: "/reports", section: "workspace", status: "planned", requiresAny: ["report:read"] },
+  { key: "reports", label: "Reports and Analytics", href: "/reports", section: "workspace", status: "available", requiresAny: ["report:read"] },
   { key: "announcements", label: "Announcements", href: "/announcements", section: "workspace", status: "planned", requiresAny: "everyone" },
   { key: "settings", label: "Organisation Settings", href: "/settings", section: "administration", status: "planned", requiresAny: ["org:update"] },
   { key: "users", label: "User and Role Management", href: "/users", section: "administration", status: "available", requiresAny: ["user:read"] },
