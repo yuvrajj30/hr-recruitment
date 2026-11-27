@@ -1,6 +1,7 @@
 // Shared public-application limits and the automatic candidate retention job (migration
 // 20261120000000_shared_limits_and_retention), against the DISPOSABLE test database only. Everything is checked
-// as the app's restricted account (hr_runtime), the way the app and the scheduled job really call it.
+// as the app's restricted account (hr_runtime) and the job's own account (hr_maintenance), the way the app and the
+// scheduled job really call it.
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -16,8 +17,9 @@ import { realRoleIds } from "./roles-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
+const maintenanceUrl = process.env.TEST_MAINTENANCE_URL;
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
-const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl);
+const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl) && isTestDb(maintenanceUrl);
 const rnd = () => randomBytes(4).toString("hex");
 const hash = () => randomBytes(32).toString("hex"); // stands in for a keyed hash
 const DOMAIN = "retention.example.test";
@@ -25,6 +27,7 @@ const DOMAIN = "retention.example.test";
 describe.skipIf(!enabled)("shared limits and automatic retention (test database)", () => {
   let owner: Db;
   let db: Db;
+  let mdb: Db; // the scheduled job's account
   let raw: Client;
   const orgIds: string[] = [];
   const userIds: string[] = [];
@@ -37,8 +40,14 @@ type K = "a" | "b" | "c" | "d";
   // Runtime connections: ONE shared one for the sequential checks (the app account has a connection limit, and
   // other test files run at the same time); extra ones only for the parallel check, closed right after.
   let shared: Client;
+  let mshared: Client; // the same for the scheduled job's account
   async function rtClient() {
     const c = new Client({ connectionString: runtimeUrl, options: "-c TimeZone=UTC" });
+    await c.connect();
+    return c;
+  }
+  async function mtClient() {
+    const c = new Client({ connectionString: maintenanceUrl, options: "-c TimeZone=UTC" });
     await c.connect();
     return c;
   }
@@ -63,9 +72,11 @@ type K = "a" | "b" | "c" | "d";
   beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 2 });
     db = createDb(runtimeUrl!, { max: 2 });
+    mdb = createDb(maintenanceUrl!, { max: 1 });
     raw = new Client({ connectionString: ownerUrl, options: "-c TimeZone=UTC" });
     await raw.connect();
     shared = await rtClient();
+    mshared = await mtClient();
     const role = await realRoleIds(owner);
     for (const [k, months] of [["a", 1], ["b", 12], ["c", 1], ["d", 12]] as const) {
       const u = await owner.user.create({ data: { email: `hr-${k}-${rnd()}@${DOMAIN}`, name: `HR ${k}` } });
@@ -102,9 +113,11 @@ type K = "a" | "b" | "c" | "d";
       }
     }
     await shared?.end();
+    await mshared?.end();
     await raw?.end();
     await owner?.$disconnect();
     await db?.$disconnect();
+    await mdb?.$disconnect();
   });
 
   describe("public application limits", () => {
@@ -260,7 +273,7 @@ type K = "a" | "b" | "c" | "d";
     });
 
     it("removes exactly the candidates who are due, by the organisation's own retention period", async () => {
-      const result = await runCandidateRetention(db, storage, { organizationId: org.a.id });
+      const result = await runCandidateRetention(mdb, storage, { organizationId: org.a.id });
       expect(result.candidatesRemoved).toBe(2);
       for (const n of ["due", "dueFileFails"]) {
         expect(await state(n), n).toMatchObject({ removed: true, notes: null, full_name: "Removed candidate", anon: true, doc_deleted: true });
@@ -269,7 +282,7 @@ type K = "a" | "b" | "c" | "d";
         expect(await state(n), n).toMatchObject({ removed: false, notes: "HR note", anon: false, doc_deleted: false });
       }
       // Organisation B's candidate is not due under B's 12 months, also when B's run happens.
-      expect((await runCandidateRetention(db, storage, { organizationId: org.b.id })).candidatesRemoved).toBe(0);
+      expect((await runCandidateRetention(mdb, storage, { organizationId: org.b.id })).candidatesRemoved).toBe(0);
       expect(await state("otherOrg")).toMatchObject({ removed: false, anon: false, doc_deleted: false });
       // The audit log says it was the retention job (no person).
       const audit = (await raw.query(`SELECT actor_user_id, metadata FROM audit_logs WHERE action = 'candidate.removed' AND entity_id = $1`, [c.due!.oc])).rows;
@@ -286,19 +299,33 @@ type K = "a" | "b" | "c" | "d";
       for (const n of ["recent", "open"]) expect(files.has(c[n]!.key), n).toBe(true);
       // Storage works again: the next run deletes the left-over file and confirms it.
       failing.clear();
-      expect(await runCandidateRetention(db, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 0, candidatesFailed: 0, filesDeleted: 1, filesFailed: 0 });
+      expect(await runCandidateRetention(mdb, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 0, candidatesFailed: 0, filesDeleted: 1, filesFailed: 0 });
       expect(files.has(c.dueFileFails!.key)).toBe(false);
       expect(await state("dueFileFails")).toMatchObject({ file_confirmed: true });
       // And a further run has nothing left to do.
-      expect(await runCandidateRetention(db, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 0, candidatesFailed: 0, filesDeleted: 0, filesFailed: 0 });
+      expect(await runCandidateRetention(mdb, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 0, candidatesFailed: 0, filesDeleted: 0, filesFailed: 0 });
     });
 
     it("is reachable only as the maintenance job, which can read no data at all", async () => {
       const rt = shared;
+      // The app account may not run the job's functions in any mode, maintenance included.
+      for (const mode of ["staff", "public_apply", "maintenance"] as const) {
+        expect((await inMode(rt, mode, `SELECT * FROM app_remove_due_candidates(10, NULL)`)).error, mode).toMatch(/permission denied for function app_remove_due_candidates/);
+        expect((await inMode(rt, mode, `SELECT * FROM app_pending_file_removals(10, NULL)`)).error, mode).toMatch(/permission denied for function app_pending_file_removals/);
+        expect((await inMode(rt, mode, `SELECT app_confirm_file_removed(ARRAY[]::uuid[])`)).error, mode).toMatch(/permission denied for function app_confirm_file_removed/);
+      }
+      // The job's account may, but only in maintenance mode.
       for (const mode of ["staff", "public_apply"] as const) {
-        expect((await inMode(rt, mode, `SELECT * FROM app_remove_due_candidates(10, NULL)`)).error, mode).toMatch(/not allowed/);
-        expect((await inMode(rt, mode, `SELECT * FROM app_pending_file_removals(10, NULL)`)).error, mode).toMatch(/not allowed/);
-        expect((await inMode(rt, mode, `SELECT app_confirm_file_removed(ARRAY[]::uuid[])`)).error, mode).toMatch(/not allowed/);
+        expect((await inMode(mshared, mode, `SELECT * FROM app_remove_due_candidates(10, NULL)`)).error, mode).toMatch(/not allowed/);
+        expect((await inMode(mshared, mode, `SELECT * FROM app_pending_file_removals(10, NULL)`)).error, mode).toMatch(/not allowed/);
+        expect((await inMode(mshared, mode, `SELECT app_confirm_file_removed(ARRAY[]::uuid[])`)).error, mode).toMatch(/not allowed/);
+      }
+      // The removal core cannot be called by the job's account directly either.
+      expect((await inMode(mshared, "maintenance", `SELECT * FROM app_remove_candidate_core($1, NULL, $2, now(), 'retention')`, [org.a.id, c.recent!.oc])).error)
+        .toMatch(/permission denied for function app_remove_candidate_core/);
+      // The job's account cannot read any candidate table at all.
+      for (const t of ["candidate_profiles", "organization_candidates", "applications", "candidate_documents", "audit_logs"]) {
+        expect((await inMode(mshared, "maintenance", `SELECT count(*)::int n FROM ${t}`)).error, t).toMatch(/permission denied for table/);
       }
       // The removal core cannot be called by the app account at all (it would skip the permission check).
       const core = await inMode(rt, "maintenance", `SELECT * FROM app_remove_candidate_core($1, NULL, $2, now(), 'retention')`, [org.a.id, c.recent!.oc]);
@@ -315,7 +342,7 @@ type K = "a" | "b" | "c" | "d";
     // What app_remove_due_candidates would remove (rolled back), in a session with the given time zone and, for
     // fixed-date checks, a pinned clock (the function only allows moving it back).
     async function dueInZone(zone: string, k: K, pNow: string | null = null) {
-      const rt = shared;
+      const rt = mshared;
       await rt.query("BEGIN");
       try {
         await rt.query(`SELECT set_config('app.mode', 'maintenance', true)`);
@@ -327,10 +354,11 @@ type K = "a" | "b" | "c" | "d";
       }
     }
     // Waits until the backend `pid` is blocked on a lock (fails after 5 s), instead of hoping a sleep is long enough.
-    // Asked as the app account: the owner account cannot see the app account's wait state in pg_stat_activity.
-    async function waitUntilBlocked(pid: number) {
+    // Asked as the same account as the waiting backend: another (non-superuser) account cannot see its wait state in
+    // pg_stat_activity. `via` is shared (app account) or mshared (the job's account).
+    async function waitUntilBlocked(pid: number, via: Client = shared) {
       for (let i = 0; i < 100; i++) {
-        const r = await shared.query(`SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`, [pid]);
+        const r = await via.query(`SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`, [pid]);
         if (r.rows[0]?.wait_event_type === "Lock") return;
         await new Promise((res) => setTimeout(res, 50));
       }
@@ -355,13 +383,13 @@ type K = "a" | "b" | "c" | "d";
         expect(due, zone).not.toContain(c.tzNotDue!.oc);
       }
       // A clock in the future is refused (it could only make more people due).
-      await shared.query("BEGIN");
-      await shared.query(`SELECT set_config('app.mode', 'maintenance', true)`);
-      const future = await shared.query(`SELECT * FROM app_remove_due_candidates(1, $1, now() + interval '1 day')`, [org.a.id]).then(() => "allowed", (e: Error) => e.message);
-      await shared.query("ROLLBACK");
+      await mshared.query("BEGIN");
+      await mshared.query(`SELECT set_config('app.mode', 'maintenance', true)`);
+      const future = await mshared.query(`SELECT * FROM app_remove_due_candidates(1, $1, now() + interval '1 day')`, [org.a.id]).then(() => "allowed", (e: Error) => e.message);
+      await mshared.query("ROLLBACK");
       expect(future).toMatch(/not allowed/);
       // Both are really due today: let the later tests in A see them removed already.
-      expect((await runCandidateRetention(db, storage, { organizationId: org.a.id })).candidatesRemoved).toBe(2);
+      expect((await runCandidateRetention(mdb, storage, { organizationId: org.a.id })).candidatesRemoved).toBe(2);
     });
 
     it("skips a candidate whose removal fails, removes the others, and retries it on the next run", async () => {
@@ -371,7 +399,7 @@ type K = "a" | "b" | "c" | "d";
       await raw.query(`CREATE FUNCTION ${fn}() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'simulated failure'; END; $$ LANGUAGE plpgsql`);
       await raw.query(`CREATE TRIGGER ${fn} BEFORE UPDATE ON organization_candidates FOR EACH ROW WHEN (OLD.id = '${c.stuck!.oc}') EXECUTE FUNCTION ${fn}()`);
       try {
-        const first = await runCandidateRetention(db, storage, { organizationId: org.a.id });
+        const first = await runCandidateRetention(mdb, storage, { organizationId: org.a.id });
         expect(first).toMatchObject({ candidatesRemoved: 1, candidatesFailed: 1 });
         expect(await state("next")).toMatchObject({ removed: true, anon: true });
         // Nothing of the failed candidate changed (its removal was its own subtransaction).
@@ -380,7 +408,7 @@ type K = "a" | "b" | "c" | "d";
         await raw.query(`DROP TRIGGER IF EXISTS ${fn} ON organization_candidates`);
         await raw.query(`DROP FUNCTION IF EXISTS ${fn}()`);
       }
-      expect(await runCandidateRetention(db, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 1, candidatesFailed: 0 });
+      expect(await runCandidateRetention(mdb, storage, { organizationId: org.a.id })).toMatchObject({ candidatesRemoved: 1, candidatesFailed: 0 });
       expect(await state("stuck")).toMatchObject({ removed: true, anon: true, doc_deleted: true });
     });
 
@@ -394,13 +422,13 @@ type K = "a" | "b" | "c" | "d";
       await raw.query(`CREATE FUNCTION ${fn}() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'simulated failure'; END; $$ LANGUAGE plpgsql`);
       await raw.query(`CREATE TRIGGER ${fn} BEFORE UPDATE ON candidate_documents FOR EACH ROW WHEN (OLD.candidate_id = '${c.cStuck!.profile}') EXECUTE FUNCTION ${fn}()`);
       try {
-        await shared.query("BEGIN");
-        await shared.query(`SELECT set_config('app.mode', 'maintenance', true)`);
-        const rows = (await shared.query(`SELECT organization_candidate_id AS id, failed FROM app_remove_due_candidates(2, $1)`, [org.c.id])).rows;
-        await shared.query("COMMIT");
+        await mshared.query("BEGIN");
+        await mshared.query(`SELECT set_config('app.mode', 'maintenance', true)`);
+        const rows = (await mshared.query(`SELECT organization_candidate_id AS id, failed FROM app_remove_due_candidates(2, $1)`, [org.c.id])).rows;
+        await mshared.query("COMMIT");
         expect(rows).toEqual([{ id: c.cStuck!.oc, failed: true }, { id: c.c1!.oc, failed: false }, { id: c.c2!.oc, failed: false }]);
       } finally {
-        await shared.query("ROLLBACK").catch(() => {});
+        await mshared.query("ROLLBACK").catch(() => {});
         await raw.query(`DROP TRIGGER IF EXISTS ${fn} ON candidate_documents`);
         await raw.query(`DROP FUNCTION IF EXISTS ${fn}()`);
       }
@@ -416,7 +444,7 @@ type K = "a" | "b" | "c" | "d";
       const legacy = await mkdtemp(path.join(os.tmpdir(), "cafeos-legacy-root-"));
       try {
         // The removal happens; the file step refuses: the wrong folder has neither the marker nor resumes/.
-        await expect(runCandidateRetention(db, createLocalStorage(empty), { organizationId: org.a.id })).rejects.toThrow(/not the app's file storage/);
+        await expect(runCandidateRetention(mdb, createLocalStorage(empty), { organizationId: org.a.id })).rejects.toThrow(/not the app's file storage/);
         expect(await state("rootCheck")).toMatchObject({ removed: true, doc_deleted: true, file_confirmed: false });
         await expect(createLocalStorage(path.join(empty, "missing")).verifyRoot!()).rejects.toThrow(/storage folder not found/);
         // A store from before the marker existed (it has resumes/ but no marker) is accepted.
@@ -426,7 +454,7 @@ type K = "a" | "b" | "c" | "d";
         const real = createLocalStorage(empty);
         await real.put(`documents/2026/${randomUUID()}`, new Uint8Array([1]));
         expect(await real.verifyRoot!()).toBe(path.resolve(empty));
-        expect(await runCandidateRetention(db, storage, { organizationId: org.a.id })).toMatchObject({ filesDeleted: 1, filesFailed: 0 });
+        expect(await runCandidateRetention(mdb, storage, { organizationId: org.a.id })).toMatchObject({ filesDeleted: 1, filesFailed: 0 });
         expect(await state("rootCheck")).toMatchObject({ file_confirmed: true });
       } finally {
         await rm(empty, { recursive: true, force: true });
@@ -440,7 +468,7 @@ type K = "a" | "b" | "c" | "d";
     it("an application arriving while the removal runs gets a fresh record; the removed one gets none", async () => {
       const email = `racer-${rnd()}@${DOMAIN}`;
       await candidate("racer", "a", "REJECTED", 6, email);
-      const remover = await rtClient();
+      const remover = await mtClient(); // the scheduled job's account
       const applicant = await rtClient();
       try {
         // The retention job removes the person but has not committed yet ...
@@ -473,7 +501,7 @@ type K = "a" | "b" | "c" | "d";
     it("a removal arriving while the person applies waits, then leaves the person (they have an open application)", async () => {
       const email = `stayer-${rnd()}@${DOMAIN}`;
       await candidate("stayer", "a", "REJECTED", 6, email);
-      const remover = await rtClient();
+      const remover = await mtClient(); // the scheduled job's account
       const applicant = await rtClient();
       try {
         // The application holds a share lock on the record and has not committed yet ...
@@ -486,7 +514,7 @@ type K = "a" | "b" | "c" | "d";
         await remover.query(`SELECT set_config('app.mode', 'maintenance', true)`);
         const removing = remover.query(`SELECT organization_candidate_id AS id, failed FROM app_remove_due_candidates(50, $1)`, [org.a.id]);
         removing.catch(() => {});
-        await waitUntilBlocked(pid);
+        await waitUntilBlocked(pid, mshared);
         await applicant.query("COMMIT");
         const rows = (await removing).rows;
         await remover.query("COMMIT");
@@ -514,7 +542,7 @@ type K = "a" | "b" | "c" | "d";
       await raw.query(`CREATE TRIGGER ${fn} BEFORE INSERT ON applications FOR EACH ROW WHEN (NEW.organization_candidate_id = '${c.window!.oc}') EXECUTE FUNCTION ${fn}()`);
       const gate = new Client({ connectionString: ownerUrl });
       await gate.connect();
-      const remover = await rtClient();
+      const remover = await mtClient(); // the scheduled job's account
       const applicant = await rtClient();
       try {
         await gate.query(`SELECT pg_advisory_lock($1)`, [key]); // closed
@@ -530,7 +558,7 @@ type K = "a" | "b" | "c" | "d";
         await remover.query(`SELECT set_config('app.mode', 'maintenance', true)`);
         const removing = remover.query(`SELECT organization_candidate_id AS id, failed FROM app_remove_due_candidates(50, $1)`, [org.a.id]);
         removing.catch(() => {});
-        await waitUntilBlocked(remPid);
+        await waitUntilBlocked(remPid, mshared);
         await gate.query(`SELECT pg_advisory_unlock($1)`, [key]); // let the application finish
         const app = (await submitting).rows[0].application_id;
         await applicant.query("COMMIT");

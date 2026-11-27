@@ -26,8 +26,9 @@ import { giveSession, purgeTestAuditRows } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
+const maintenanceUrl = process.env.TEST_MAINTENANCE_URL; // the scheduled job's own account
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
-const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl);
+const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl) && isTestDb(maintenanceUrl);
 const rnd = () => randomBytes(4).toString("hex");
 const TZ = "Asia/Kolkata";
 type Who = "sa" | "hr" | "emp" | "emp2" | "hrB";
@@ -41,6 +42,7 @@ const upload = (f: { name: string; bytes: Uint8Array }) => ({ name: f.name, size
 describe.skipIf(!enabled)("tasks service (test database)", { timeout: 90_000 }, () => {
   let owner: Db;
   let db: Db;
+  let mdb: Db;
   let raw: Client;
   const orgs: string[] = [];
   const userIds: string[] = [];
@@ -66,6 +68,7 @@ describe.skipIf(!enabled)("tasks service (test database)", { timeout: 90_000 }, 
   beforeAll(async () => {
     owner = createDb(ownerUrl!, { max: 2 });
     db = createDb(runtimeUrl!, { max: 3 });
+    mdb = createDb(maintenanceUrl!, { max: 1 });
     raw = new Client({ connectionString: ownerUrl, options: "-c TimeZone=UTC" });
     await raw.connect();
     storeDir = mkdtempSync(path.join(tmpdir(), "cafeos-task-store-"));
@@ -116,6 +119,7 @@ describe.skipIf(!enabled)("tasks service (test database)", { timeout: 90_000 }, 
     if (storeDir) rmSync(storeDir, { recursive: true, force: true });
     await owner?.$disconnect();
     await db?.$disconnect();
+    await mdb?.$disconnect();
     await raw?.end();
   });
 
@@ -210,7 +214,8 @@ describe.skipIf(!enabled)("tasks service (test database)", { timeout: 90_000 }, 
   it("runs the daily reminders through the maintenance account and deletes nothing", async () => {
     const id = await assignTask(deps(), ctx.hr, input("emp", { proof: ["TEXT"], dueOn: today }));
     const before = filesInStore().length;
-    const r = await runTaskHousekeeping(db);
+    await expect(runTaskHousekeeping(db)).rejects.toThrow(/permission denied for function app_task_housekeeping/); // not the web app's account
+    const r = await runTaskHousekeeping(mdb);
     expect(r).not.toBeNull();
     expect(typeof r!.reminders).toBe("number");
     expect(filesInStore().length).toBe(before);

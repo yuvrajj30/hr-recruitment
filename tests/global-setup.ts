@@ -43,6 +43,9 @@ async function check(label: string, url: string): Promise<void> {
     if (label === "TEST_RUNTIME_URL" && (r.super || r.bypass)) {
       throw new Error("The app's runtime account must not be a superuser or bypass row-level security; the security tests would be meaningless.");
     }
+    if (label === "TEST_MAINTENANCE_URL" && (r.super || r.bypass)) {
+      throw new Error("The maintenance account must not be a superuser or bypass row-level security; the security tests would be meaningless.");
+    }
   } finally {
     await client.end();
   }
@@ -55,4 +58,15 @@ export default async function setup(): Promise<void> {
   if (!owner || !runtime) return;
   await check("TEST_OWNER_URL", owner);
   await check("TEST_RUNTIME_URL", runtime);
+  // The scheduled job's own account (hr_maintenance): the housekeeping tests run as it. Without it they would skip
+  // themselves silently, so its absence stops the run instead.
+  const maintenance = process.env.TEST_MAINTENANCE_URL;
+  if (!maintenance) {
+    throw new Error(
+      "TEST_MAINTENANCE_URL is missing from .env.test. Create the hr_maintenance account once (prisma/sql/m4-01-create-maintenance-role.sql, " +
+        "as the PostgreSQL admin) and add its connection to the test database to .env.test.",
+    );
+  }
+  if (decodeURIComponent(new URL(maintenance).username) !== "hr_maintenance") throw new Error("TEST_MAINTENANCE_URL must use the hr_maintenance account.");
+  await check("TEST_MAINTENANCE_URL", maintenance);
 }

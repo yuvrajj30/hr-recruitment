@@ -11,8 +11,9 @@ import { pgSessionToken, purgeTestAuditRows } from "./session-helper";
 
 const ownerUrl = process.env.TEST_OWNER_URL;
 const runtimeUrl = process.env.TEST_RUNTIME_URL;
+const maintenanceUrl = process.env.TEST_MAINTENANCE_URL; // the scheduled job's own account (hr_maintenance)
 const isTestDb = (u?: string) => Boolean(u && /_test\b/.test(new URL(u).pathname));
-const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl);
+const enabled = isTestDb(ownerUrl) && isTestDb(runtimeUrl) && isTestDb(maintenanceUrl);
 const rnd = () => randomBytes(4).toString("hex");
 const TZ = "Asia/Kolkata";
 type K = "a" | "b";
@@ -25,6 +26,7 @@ describe.skipIf(!enabled)("tasks (test database)", { timeout: 90_000 }, () => {
   let owner: Db;
   let raw: Client;
   let rt: Client;
+  let mt: Client; // maintenance mode runs as the job's account, like the daily job
   const orgIds: string[] = [];
   const userIds: string[] = [];
   const w = {} as Record<K, { org: string; user: Record<Who, string>; member: Record<Who, string>; outlet: string; outlet2: string; e: Record<Emp, string> }>;
@@ -38,6 +40,8 @@ describe.skipIf(!enabled)("tasks (test database)", { timeout: 90_000 }, () => {
     rt = new Client({ connectionString: runtimeUrl, options: "-c TimeZone=UTC" });
     await raw.connect();
     await rt.connect();
+    mt = new Client({ connectionString: maintenanceUrl, options: "-c TimeZone=UTC" });
+    await mt.connect();
     today = (await raw.query(`SELECT (now() AT TIME ZONE $1)::date::text AS d`, [TZ])).rows[0].d;
     const role = await realRoleIds(owner);
     roleIds = role as unknown as Record<string, string>;
@@ -82,9 +86,11 @@ describe.skipIf(!enabled)("tasks (test database)", { timeout: 90_000 }, () => {
     await owner?.$disconnect();
     await raw?.end();
     await rt?.end();
+    await mt?.end();
   });
 
   async function run(c: Client, k: K, who: Who | "public" | "maintenance", sql: string, params: unknown[] = []): Promise<Result> {
+    if (who === "maintenance") c = mt;
     await c.query("BEGIN");
     try {
       if (who === "public") await c.query(`SELECT set_config('app.mode', 'public_apply', true), set_config('app.org_id', $1, true)`, [w[k].org]);

@@ -19,6 +19,10 @@ const schema = z
     // Only migrations and seeding use the owner account (hr_app). The running app never needs it.
     MIGRATION_DATABASE_URL: postgresUrl.optional(),
     DB_OWNER_ROLE: z.string().min(1).default("hr_app"),
+    // The scheduled housekeeping job's own account (see src/lib/maintenance-env.ts). The web app must never hold its
+    // connection: it is named here only so the app can refuse to start with it.
+    DB_MAINTENANCE_ROLE: z.string().min(1).default("hr_maintenance"),
+    MAINTENANCE_DATABASE_URL: z.string().optional(),
     // "UTC" makes every database connection use UTC, which timestamps need to be stored and read
     // correctly (see src/lib/db.ts). Unset = the database server's own time zone (legacy behaviour),
     // kept for an existing database until its historical timestamps have been corrected.
@@ -62,6 +66,20 @@ const schema = z
         code: "custom",
         path: ["DATABASE_URL"],
         message: `must use the restricted runtime account, not the owner account "${env.DB_OWNER_ROLE}"`,
+      });
+    }
+    if (usernameOf(env.DATABASE_URL) === env.DB_MAINTENANCE_ROLE) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DATABASE_URL"],
+        message: `must use the restricted runtime account, not the maintenance account "${env.DB_MAINTENANCE_ROLE}"`,
+      });
+    }
+    if (env.MAINTENANCE_DATABASE_URL !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["MAINTENANCE_DATABASE_URL"],
+        message: "must not be given to the web app or its tools: only the scheduled job reads it, from .env.maintenance",
       });
     }
     if (env.MIGRATION_DATABASE_URL && usernameOf(env.MIGRATION_DATABASE_URL) !== env.DB_OWNER_ROLE) {
