@@ -117,6 +117,7 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
     ["leave:approve", "Approve or reject leave requests"],
     ["leave:manage", "Set up leave types, holidays and balance adjustments"],
   ],
+  task: [["task:manage", "Assign, review and cancel tasks"]],
   report: [["report:read", "View HR reports and dashboards"]],
   self: [
     ["self:profile_read", "View my own employee profile and work information"],
@@ -126,6 +127,7 @@ const PERMISSIONS: Record<string, [key: string, description: string][]> = {
     ["self:leave_apply", "Apply for leave"],
     ["self:leave_read", "View my own leave balance and requests"],
     ["notification:read", "Receive my notifications"],
+    ["self:task", "See and work on my own tasks"],
   ],
 };
 

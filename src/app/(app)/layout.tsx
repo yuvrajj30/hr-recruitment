@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { type ReactNode, Suspense } from "react";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import { AppShell } from "@/components/shell/app-shell";
 import { ShellSkeleton } from "@/components/shell/shell-skeleton";
 import { listUserOrganizations } from "@/lib/auth/organizations";
@@ -28,6 +29,7 @@ async function SignedInShell({ children }: { children: ReactNode }) {
       organization={auth.organization}
       organizations={organizations}
       navigation={buildNavigation(auth.permissions)}
+      bell={<NotificationBell />}
     >
       {children}
     </AppShell>

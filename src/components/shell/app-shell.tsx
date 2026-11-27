@@ -16,6 +16,8 @@ export type ShellProps = {
   organization: OrganizationSummary | null;
   organizations: OrganizationSummary[];
   navigation: NavItem[];
+  // The notification bell (a server-rendered element), shown before the account menu.
+  bell?: ReactNode;
   children: ReactNode;
 };
 
@@ -23,7 +25,7 @@ export type ShellProps = {
 //   Laptop and up (lg, 1024px+): full sidebar with labels.
 //   Tablet (md, 768px+): narrow icon rail with tooltips.
 //   Phone: no sidebar; a menu button opens it as a slide-out panel.
-export function AppShell({ user, organization, organizations, navigation, children }: ShellProps) {
+export function AppShell({ user, organization, organizations, navigation, bell, children }: ShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -54,6 +56,7 @@ export function AppShell({ user, organization, organizations, navigation, childr
             </Button>
             <span className="truncate text-sm font-semibold text-fg md:hidden">{organization?.name ?? "HRMS"}</span>
             <div className="ml-auto flex items-center gap-2">
+              {bell}
               <UserMenu name={user.name} email={user.email} />
             </div>
           </header>

@@ -52,6 +52,7 @@ const SELF_SERVICE: readonly PermissionKey[] = [
   "self:leave_apply",
   "self:leave_read",
   "notification:read",
+  "self:task",
 ];
 
 export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {

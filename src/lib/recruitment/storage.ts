@@ -27,11 +27,11 @@ export interface FileStorage {
 export const STORAGE_MARKER = ".cafeos-storage";
 
 // "resumes/2026/0193c1e2-....": a folder per year, then a random id. No extension, no original name.
-export function newStorageKey(folder: "resumes" | "documents", now: Date): string {
+export function newStorageKey(folder: "resumes" | "documents" | "tasks", now: Date): string {
   return `${folder}/${now.getUTCFullYear()}/${randomUUID()}`;
 }
 
-const KEY_PATTERN = /^(resumes|documents)\/\d{4}\/[0-9a-f-]{36}$/;
+const KEY_PATTERN = /^(resumes|documents|tasks)\/\d{4}\/[0-9a-f-]{36}$/;
 
 export function createLocalStorage(rootDir: string): FileStorage {
   const root = path.resolve(rootDir);

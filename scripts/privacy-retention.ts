@@ -9,6 +9,7 @@ import { generateStandardShifts, removeOldAttendanceDeviceData, runLeaveHousekee
 import { getDb } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { runCandidateRetention } from "@/lib/recruitment/retention";
+import { runTaskHousekeeping } from "@/lib/tasks/housekeeping";
 import { getFileStorage } from "@/lib/recruitment/storage";
 
 async function main() {
@@ -30,6 +31,9 @@ async function main() {
     // Leave: yearly grants, monthly accruals, and the close of last year (from 1 February).
     const leave = await runLeaveHousekeeping(db);
     console.log(leave === null ? "Leave: not installed on this database yet." : `Wrote ${leave} leave balance line(s) (grants, accruals, year close).`);
+    // Tasks: deadline reminders (nothing is deleted).
+    const tasks = await runTaskHousekeeping(db);
+    console.log(tasks === null ? "Tasks: not installed on this database yet." : `Sent ${tasks.reminders} task reminder(s).`);
   } finally {
     await db.$disconnect();
   }

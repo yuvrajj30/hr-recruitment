@@ -16,7 +16,10 @@ import { getCurrentAuth } from "@/lib/auth/server-session";
 import { type EmployeeDetail, getEmployee, listLinkableAccounts } from "@/lib/employees/employees";
 import { EMPLOYMENT_TYPE_LABELS } from "@/lib/employees/rules";
 import { RecruitmentError } from "@/lib/recruitment/errors";
+import { formatDate } from "@/lib/recruitment/labels";
 import { getOrganizationSettings } from "@/lib/recruitment/jobs";
+import { RATING_LABELS, type TaskRating } from "@/lib/tasks/rules";
+import { listApprovedTasksForEmployee } from "@/lib/tasks/tasks";
 
 export const metadata: Metadata = { title: "Employee · HRMS" };
 
@@ -49,9 +52,10 @@ async function EmployeeContent({ params, searchParams }: { params: Promise<{ emp
   }
   const canManage = auth.permissions.has("employee:manage");
   const active = employee.status === "ACTIVE";
-  const [{ timezone }, linkable] = await Promise.all([
+  const [{ timezone }, linkable, approvedTasks] = await Promise.all([
     getOrganizationSettings(rt.db, auth),
     canManage && active && !employee.memberId ? listLinkableAccounts(rt.db, auth) : Promise.resolve([]),
+    auth.permissions.has("task:manage") ? listApprovedTasksForEmployee(rt.db, auth, employee.id) : Promise.resolve(null),
   ]);
   const saved = typeof query.saved === "string" ? SAVED_MESSAGES[query.saved] : undefined;
 
@@ -154,6 +158,38 @@ async function EmployeeContent({ params, searchParams }: { params: Promise<{ emp
               )}
             </CardBody>
           </Card>
+
+          {approvedTasks && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Approved tasks</CardTitle>
+                  <CardDescription>Tasks HR approved, newest first, with the rating and comment given. Nothing is added up or averaged.</CardDescription>
+                </div>
+              </CardHeader>
+              {approvedTasks.length === 0 ? (
+                <CardBody>
+                  <p className="text-[13px] text-fg-muted">No approved tasks yet.</p>
+                </CardBody>
+              ) : (
+                <ul className="divide-y divide-border text-[13px]">
+                  {approvedTasks.map((t) => (
+                    <li key={t.id} className="space-y-0.5 px-5 py-3">
+                      <Link href={`/tasks/${t.id}`} className="font-medium text-accent-fg hover:underline">
+                        {t.title}
+                      </Link>
+                      <p className="text-fg-muted">
+                        {t.outlet}
+                        {t.decidedAt ? `, approved ${formatDate(t.decidedAt, timezone)}` : ""}
+                        {t.rating !== null ? `, ${t.rating}/5 ${RATING_LABELS[t.rating as TaskRating]}` : ""}
+                      </p>
+                      {t.ratingComment && <p className="whitespace-pre-wrap text-fg">{t.ratingComment}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
