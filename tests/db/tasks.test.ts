@@ -379,15 +379,19 @@ describe.skipIf(!enabled)("tasks (test database)", { timeout: 90_000 }, () => {
     });
 
     it("sends each reminder once even if the daily job runs twice or skips a day (Review Focus 5)", async () => {
-      const a1 = await assign("b", "emp", { due: day(1), proof: "{TEXT}" });
-      const a2 = await assign("b", "emp2", { due: day(1), proof: "{TEXT}" });
+      // p_today may be at most one day ahead of the real UTC date (the guard in app_task_housekeeping). Between 00:00 and
+      // 05:30 IST the organisation's date is already one ahead of UTC, so "tomorrow" there is refused: take the furthest
+      // date the guard allows, read from the database the same way the guard computes it.
+      const ahead = (await raw.query(`SELECT ((clock_timestamp() AT TIME ZONE 'UTC')::date + 1)::text AS d`)).rows[0].d as string;
+      const beyond = (await raw.query(`SELECT ($1::date + 1)::text AS d`, [ahead])).rows[0].d as string;
+      const a1 = await assign("b", "emp", { due: ahead, proof: "{TEXT}" });
+      const a2 = await assign("b", "emp2", { due: ahead, proof: "{TEXT}" });
       const due = (id: string) => raw.query(`SELECT count(*)::int n FROM notifications WHERE task_id = $1 AND type = 'TASK_DUE'`, [id]).then((r) => r.rows[0].n as number);
-      // p_today may be at most one day ahead of the real date.
-      await ok("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [day(1)]);
-      await ok("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [day(1)]);
+      await ok("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [ahead]);
+      await ok("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [ahead]);
       expect(await due(a1)).toBe(1);
       expect(await due(a2)).toBe(1);
-      expect((await as("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [day(5)])).error).toMatch(/not allowed/);
+      expect((await as("b", "maintenance", `SELECT * FROM app_task_housekeeping($1::date)`, [beyond])).error).toMatch(/not allowed/);
       // A task due yesterday whose due-day run was missed gets one "overdue" reminder only.
       const late = (await raw.query(`INSERT INTO tasks (organization_id, outlet_id, owner_employee_id, title, description, due_on, proof_kinds, created_by_id)
         VALUES ($1, $2, $3, 'Old', 'Old task', $4::date, '{TEXT}', $5) RETURNING id`, [w.b.org, w.b.outlet, w.b.e.emp, day(-1), w.b.user.hr])).rows[0].id;
